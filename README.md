@@ -1,0 +1,2 @@
+# seasoning
+modular waybar modules to make a spicy clock, i guess?
