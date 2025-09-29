@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -o pipefail
 
 SEAS_SYS="/usr/share/seasoning"
 SEAS_USER="${SEASONING_HOME:-$HOME/.config/seasoning}"
@@ -57,16 +57,27 @@ pairs_count(){ read_pairs | wc -l | tr -d ' '; }
 nth_pair(){ local idx="$1" i=0 line; while IFS= read -r line; do
   if (( i==idx )); then printf '%s\n' "$line"; return 0; fi; ((i++)); done < <(read_pairs); return 1; }
 
-maybe_signal_hour_change(){ local s="$SEAS_CACHE/_last_hour_signalled"; mkdir -p "$SEAS_CACHE"
-  local nowh; nowh="$(date +%Y%m%d%H)"; local old=""; [[ -r "$s" ]] && old="$(cat "$s" 2>/dev/null || true)"
-  if [[ "$nowh" != "$old" ]]; then printf '%s' "$nowh" >"$s"; pkill -x -RTMIN+"$SEAS_SIGNAL_PAIR" waybar || true; fi }
+maybe_signal_hour_change(){
+  local stamp="$SEAS_CACHE/_last_hour_signalled"; mkdir -p "$SEAS_CACHE"
+  local nowh; nowh="$(date +%Y%m%d%H)"
+  local old=""; [[ -r "$stamp" ]] && old="$(cat "$stamp" 2>/dev/null || true)"
+  if [[ "$nowh" != "$old" ]]; then printf '%s' "$nowh" >"$stamp"; send_signal "$SEAS_SIGNAL_PAIR"; fi
+}
 
-run_clock(){ local out; out="$(which_output)"
+run_clock() {
+  local out; out="$(which_output)"
   mapfile -t arr < <(list_clock_plugins)
-  local n="${#arr[@]}"; (( n>0 )) || { echo "[seasoning:clock:no-plugins]"; exit 1; }
+  local n="${#arr[@]}"; (( n>0 )) || { echo '{"text":"[seasoning:clock:no-plugins]"}'; exit 0; }
   local idx; idx="$(read_state clock "$out" "$n")"
-  "${arr[$idx]}"
+  local plugin="${arr[$idx]}"; local name; name="$(canon_name "$plugin")"
+  # Never fail the JSON wrapper if the plugin errors
+  local text rc
+  text="$("$plugin" 2>/dev/null)"; rc=$?
+  [[ -n "$text" ]] || text="[?]"
+  text="$(printf "%s" "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  printf '{"text":"%s","class":"clock--%s"}\n' "$text" "$name"
   maybe_signal_hour_change
+  exit 0
 }
 run_pair_side(){ local side="${1:-left}"; [[ "$side" =~ ^(left|right)$ ]] || side="left"
   local out; out="$(which_output)"
@@ -111,6 +122,68 @@ do_list(){ local what="${1:-all}"
            done < <(read_pairs) ;;
   esac
 }
+send_signal() {  # SIGRTMIN+N to Waybar, robust
+  local n="${1:-6}" sig="RTMIN+$n" pids=""
+  pids="$(pidof -x waybar 2>/dev/null || true)"
+  [[ -z "$pids" ]] && pids="$(pgrep -f '[Ww]aybar' 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then kill -s "$sig" $pids 2>/dev/null || true; return 0; fi
+  pkill -"${sig}" waybar 2>/dev/null || true
+}
+
+ticker(){  # --signal N (default 6)
+  local sig="${1:-6}"
+  while :; do
+    ns=$(date +%s%N); next=$(( (ns/1000000000 + 1)*1000000000 ))
+    sleep "$(awk "BEGIN{printf \"%.3f\", ($next-$ns)/1e9}")"
+    send_signal "$sig"
+  done
+}
+
+ok(){ printf 'OK  %s\n' "$1"; }
+warn(){ printf 'WARN %s\n' "$1"; }
+fail(){ printf 'FAIL %s\n' "$1"; }
+
+doctor_signals(){
+  echo "Waybar PIDs: $(pidof -x waybar || echo none)"
+  echo -n "Send RTMIN+6… "; send_signal 6; echo "done"
+  echo -n "Send RTMIN+5… "; send_signal 5; echo "done"
+}
+doctor_state(){
+  local out="$(/usr/bin/seasoning which-output)"
+  echo "Output: $out"
+  local cfile="$SEAS_CACHE/$out/clock.state"
+  local pfile="$SEAS_CACHE/$out/pair.state"
+  echo "clock.state: $( [[ -e $cfile ]] && cat "$cfile" || echo 'missing' )   ($cfile)"
+  echo "pair.state : $( [[ -e $pfile ]] && cat "$pfile" || echo 'missing' )   ($pfile)"
+  # resolved plugin names
+  mapfile -t clocks < <(list_clock_plugins)
+  idxc="$(read_state clock "$out" "${#clocks[@]}")"
+  echo "clock plugin: $(canon_name "${clocks[$idxc]}")"
+  n="$(pairs_count)"; idxp="$(read_state pair "$out" "$n")"
+  lr="$(nth_pair "$idxp")"; echo "pair: $lr"
+}
+doctor(){
+  echo "== seasoning doctor =="
+  # JSON check (unchanged)
+  if out="$(/usr/bin/seasoning run clock 2>/dev/null)" && echo "$out" | jq -e .text >/dev/null 2>&1; then
+    cls="$(echo "$out" | jq -r .class)"; ok "clock JSON ok (class=$cls)"
+  else
+    fail "clock JSON invalid. Check return-type=json and wrapper."
+  fi
+  if systemctl --user is-active --quiet seasoning-ticker.service; then ok "ticker service active"; else warn "ticker inactive"; fi
+  # plugin sanity (unchanged)
+  local bad=0
+  while IFS= read -r p; do
+    [[ -x "$p" ]] || { printf "   · %s not executable\n" "$p"; bad=1; continue; }
+    if out="$("$p" 2>/dev/null)"; then
+      [[ -n "$out" ]] && printf "   · %s ok\n" "$(basename "$p")" || { printf "   · %s empty output\n" "$(basename "$p")"; bad=1; }
+    else printf "   · %s non-zero exit\n" "$(basename "$p")"; bad=1; fi
+  done < <(ls -1 /usr/share/seasoning/plugins/clock.d/* 2>/dev/null | sort -V)
+  (( bad==0 )) && ok "clock plugins ok" || warn "one or more clock plugins had issues"
+  if printf "%b" "\\U0001CE50" >/dev/null 2>&1; then ok "printf supports \\U escapes"; else warn "no \\U support"; fi
+  doctor_signals
+  doctor_state
+}
 
 main(){ local cmd="${1:-}"; shift || true
   case "$cmd" in
@@ -119,6 +192,9 @@ main(){ local cmd="${1:-}"; shift || true
     which-output) which_output ;;
     init) do_init ;;
     list) do_list "${1:-all}" ;;
+    ticker) ticker "${1:-6}" ;;
+    signal) send_signal "${1:-6}" ;;
+    doctor) doctor ;;
     *) usage ;;
   esac
 }

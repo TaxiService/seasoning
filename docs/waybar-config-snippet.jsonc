@@ -1,23 +1,23 @@
 {
   "custom/seasoning-clock": {
     "exec": "/usr/bin/seasoning run clock",
+    "return-type": "json",
     "interval": 1,
-    "return-type": "string",
-    "on-click": "/usr/bin/seasoning ctl clock cycle $(/usr/bin/seasoning which-output)",
+    "on-click": "/usr/bin/seasoning ctl clock cycle",
     "tooltip": false
   },
   "custom/seasoning-left": {
     "exec": "/usr/bin/seasoning run pair left",
     "return-type": "string",
-    "signal": 5,
-    "on-click": "/usr/bin/seasoning ctl pair cycle $(/usr/bin/seasoning which-output); pkill -x -RTMIN+5 waybar",
+    "interval": 1,
+    "on-click": "/usr/bin/seasoning ctl pair cycle",
     "tooltip": false
   },
   "custom/seasoning-right": {
     "exec": "/usr/bin/seasoning run pair right",
     "return-type": "string",
-    "signal": 5,
-    "on-click": "/usr/bin/seasoning ctl pair cycle $(/usr/bin/seasoning which-output); pkill -x -RTMIN+5 waybar",
+    "interval": 1,
+    "on-click": "/usr/bin/seasoning ctl pair cycle",
     "tooltip": false
-  }
+  },
 }
