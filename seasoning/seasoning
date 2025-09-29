@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SEAS_SYS="/usr/share/seasoning"
+SEAS_USER="${SEASONING_HOME:-$HOME/.config/seasoning}"
+SEAS_CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
+SEAS_SIGNAL_PAIR="${SEASONING_PAIR_SIGNAL:-5}"
+
+usage(){ printf 'usage:\n  seasoning run clock\n  seasoning run pair <left|right>\n  seasoning ctl <clock|pair> <cycle|prev|set N> [--output NAME|--global]\n  seasoning which-output\n  seasoning init\n  seasoning list [left|right|pairs]\n' >&2; exit 2; }
+
+which_output(){
+  if [[ -n "${WAYBAR_OUTPUT_NAME-}" ]]; then printf '%s\n' "$WAYBAR_OUTPUT_NAME"; return 0; fi
+  if command -v swaymsg >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    o="$(swaymsg -r -t get_outputs | jq -r '.[]|select(.focused==true)|.name' | head -n1 || true)"
+    [[ -n "$o" ]] && { printf '%s\n' "$o"; return 0; }
+  fi
+  if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    o="$(hyprctl monitors -j | jq -r '.[]|select((.focused==true) or (.active==true))|.name' | head -n1 || true)"
+    [[ -n "$o" ]] && { printf '%s\n' "$o"; return 0; }
+  fi
+  printf '%s\n' "default"
+}
+
+key_for(){ case "$1" in pair) printf 'pair';; clock) printf 'clock';; *) printf '%s' "$1";; esac; }
+state_path(){ mkdir -p "$SEAS_CACHE/$2"; printf '%s\n' "$SEAS_CACHE/$2/$(key_for "$1").state"; }
+read_state(){ local k="$1" o="$2" n="${3:-0}" s=0 f; f="$(state_path "$k" "$o")"
+  [[ -s "$f" ]] && s="$(cat "$f" 2>/dev/null || echo 0)"
+  [[ "$s" =~ ^[0-9]+$ ]] || s=0; (( n>0 )) && s=$(( s % n )); printf '%s\n' "$s"; }
+write_state(){ local f; f="$(state_path "$1" "$2")"; local t; t="$(mktemp)"; printf '%s\n' "$3" >"$t"; mv -f "$t" "$f"; }
+cycle_state(){ local cur; cur="$(read_state "$1" "$2" 0)"; local n="$3" dir="${4:-cycle}" nxt
+  case "$dir" in prev) nxt=$(( (cur-1+n)%n ));; *) nxt=$(( (cur+1)%n ));; esac; write_state "$1" "$2" "$nxt"; }
+set_state(){ local v="$3" n="$4"; (( n>0 )) && v=$(( v % n )); write_state "$1" "$2" "$v"; }
+
+canon_name(){ local b="$1"; b="${b##*/}"; b="${b#[0-9][0-9]-}"; echo "${b%%.*}"; }
+scan_plugins(){ local m="$1"; local d1="$SEAS_USER/plugins/$m.d" d2="$SEAS_SYS/plugins/$m.d"
+  for dir in "$d1" "$d2"; do [[ -d "$dir" ]] && find "$dir" -maxdepth 1 -type f -perm -111 -print; done; }
+resolve_plugin(){ local m="$1" want="$2" p; for p in $(scan_plugins "$m"); do
+  [[ "$(canon_name "$p")" == "$want" ]] && { printf '%s\n' "$p"; return 0; }; done; return 1; }
+list_clock_plugins(){ scan_plugins clock | sort -V; }
+list_names(){ local m="$1"; scan_plugins "$m" | while read -r p; do echo "$(canon_name "$p")"; done | sort -u; }
+
+pairs_file(){ [[ -f "$SEAS_USER/pairs.conf" ]] && { printf '%s\n' "$SEAS_USER/pairs.conf"; return; }; printf '%s\n' "$SEAS_SYS/pairs.conf"; }
+read_pairs(){ local pf; pf="$(pairs_file)" || return 1
+  local line left right
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"; line="${line//$'\t'/ }"; line="$(echo "$line" | sed -e 's/^ *//' -e 's/ *$//')"
+    [[ -z "$line" ]] && continue
+    left="${line%%|*}"; right="${line#*|}"
+    left="$(echo "$left" | sed -e 's/ *$//')"; right="$(echo "$right" | sed -e 's/^ *//')"
+    [[ -z "$left" || -z "$right" ]] && continue
+    if resolve_plugin left "$left" >/dev/null && resolve_plugin right "$right" >/dev/null; then
+      printf '%s|%s\n' "$left" "$right"
+    fi
+  done < "$pf"
+}
+pairs_count(){ read_pairs | wc -l | tr -d ' '; }
+nth_pair(){ local idx="$1" i=0 line; while IFS= read -r line; do
+  if (( i==idx )); then printf '%s\n' "$line"; return 0; fi; ((i++)); done < <(read_pairs); return 1; }
+
+maybe_signal_hour_change(){ local s="$SEAS_CACHE/_last_hour_signalled"; mkdir -p "$SEAS_CACHE"
+  local nowh; nowh="$(date +%Y%m%d%H)"; local old=""; [[ -r "$s" ]] && old="$(cat "$s" 2>/dev/null || true)"
+  if [[ "$nowh" != "$old" ]]; then printf '%s' "$nowh" >"$s"; pkill -x -RTMIN+"$SEAS_SIGNAL_PAIR" waybar || true; fi }
+
+run_clock(){ local out; out="$(which_output)"
+  mapfile -t arr < <(list_clock_plugins)
+  local n="${#arr[@]}"; (( n>0 )) || { echo "[seasoning:clock:no-plugins]"; exit 1; }
+  local idx; idx="$(read_state clock "$out" "$n")"
+  "${arr[$idx]}"
+  maybe_signal_hour_change
+}
+run_pair_side(){ local side="${1:-left}"; [[ "$side" =~ ^(left|right)$ ]] || side="left"
+  local out; out="$(which_output)"
+  local n; n="$(pairs_count)"; (( n>0 )) || { echo "[seasoning:pairs:empty]"; exit 1; }
+  local idx; idx="$(read_state pair "$out" "$n")"
+  local lr; lr="$(nth_pair "$idx")" || lr="$(nth_pair 0)"
+  local left="${lr%%|*}" right="${lr#*|}"
+  local lp rp; lp="$(resolve_plugin left "$left")"; rp="$(resolve_plugin right "$right")"
+  [[ "$side" == "left" ]] && exec "$lp" || exec "$rp"
+}
+
+ctl_module(){ local module="$1"; shift
+  local action="${1:-cycle}"; shift || true
+  local output=""; local global=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --output) output="$2"; shift 2;; --global) global=true; shift;;
+      set|cycle|prev) action="$1"; shift;; *) break;; esac
+  done
+  [[ -n "$output" ]] || $global || output="$(which_output)"; $global && output="all"
+  local cnt; case "$module" in clock) cnt="$(list_clock_plugins | wc -l | tr -d ' ')";; pair) cnt="$(pairs_count)";; *) usage;; esac
+  (( cnt>0 )) || exit 1
+  case "$action" in prev|cycle) cycle_state "$module" "$output" "$cnt" "$action" >/dev/null ;;
+                     set) set_state "$module" "$output" "${1:-0}" "$cnt" ;; esac
+}
+
+do_init(){ mkdir -p "$SEAS_USER"; local dst="$SEAS_USER/pairs.conf"
+  if [[ -e "$dst" ]]; then echo "$dst exists"; return 0; fi
+  cp -n "$SEAS_SYS/pairs.conf" "$dst"
+  echo "wrote $dst"
+}
+do_list(){ local what="${1:-all}"
+  case "$what" in
+    left)  echo "left:";  list_names left ;;
+    right) echo "right:"; list_names right ;;
+    pairs) echo "pairs:"; local i=0; while IFS= read -r lr; do
+             local l="${lr%%|*}" r="${lr#*|}"; printf "[%d] %s | %s\n" "$i" "$l" "$r"; ((i++))
+           done < <(read_pairs) ;;
+    *)     echo "left:";  list_names left
+           echo "right:"; list_names right
+           echo "pairs:"; local i=0; while IFS= read -r lr; do
+             local l="${lr%%|*}" r="${lr#*|}"; printf "[%d] %s | %s\n" "$i" "$l" "$r"; ((i++))
+           done < <(read_pairs) ;;
+  esac
+}
+
+main(){ local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    run) case "${1:-}" in clock) shift; run_clock ;; pair) shift; run_pair_side "${1:-left}" ;; *) usage ;; esac ;;
+    ctl) [[ $# -ge 2 ]] || usage; ctl_module "$@" ;;
+    which-output) which_output ;;
+    init) do_init ;;
+    list) do_list "${1:-all}" ;;
+    *) usage ;;
+  esac
+}
+main "$@"
