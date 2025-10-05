@@ -1,44 +1,25 @@
-# =====================================================================
-# /usr/share/seasoning/plugins/left.d/descriptive-left.sh
-# Modes: words | 1st | noord
-# =====================================================================
 #!/usr/bin/env bash
+# modes: 0=dow+timeofday  1=ordinal words  2=ordinal 1st/2nd/...
 set -o pipefail; LC_ALL=C
 
-OUT="${WAYBAR_OUTPUT_NAME:-default}"
-MODE=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --output) OUT="$2"; shift 2;;
-    --mode)   MODE="$2"; shift 2;;
-    --list-modes) printf "%s\n" words 1st noord; exit 0;;
-    *) shift;;
-  esac
-done
-st="$HOME/.cache/seasoning/$OUT/left.descriptive-left.mode"
-[[ -z "$MODE" && -f "$st" ]] && MODE="$(<"$st")"
-MODE="${MODE:-words}"
+OUT="${WAYBAR_OUTPUT_NAME:-$("/usr/bin/seasoning" which-output 2>/dev/null || echo default)}"
+ID="descriptive-left"
+mode=$(/usr/lib/seasoning/ctl-mode get "$OUT" "$ID" 2>/dev/null || echo 0)
 
-m=$(date +%-m); d=$(date +%-d); LEAP=""
-if [[ $m -eq 2 && $d -eq 29 ]]; then LEAP="!"; fi
+dow=$(LC_ALL=C date +%A | tr '[:upper:]' '[:lower:]')
+H=$(date +%H); h=$((10#$H))
+if   ((h<6));  then tod=night
+elif ((h<12)); then tod=morning
+elif ((h<18)); then tod=afternoon
+else               tod=evening
+fi
 
-dow=$(date +%A | tr '[:upper:]' '[:lower:]')
-H=$((10#$(date +%H)))
-case "$H" in
-  0|1|2|3|4|5)  tod="night" ;;
-  6|7|8|9|10|11) tod="morning" ;;
-  12|13|14|15|16|17) tod="afternoon" ;;
-  *)            tod="evening" ;;
-esac
+ord_words=(zero first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth twenty-first twenty-second twenty-third twenty-fourth twenty-fifth twenty-sixth twenty-seventh twenty-eighth twenty-ninth thirtieth thirty-first)
+n=$((10#$(date +%d)))
+ord_sup(){ local n=$1 s; case $((n%100)) in 11|12|13) s=th;; *) case $((n%10)) in 1)s=st;;2)s=nd;;3)s=rd;;*)s=th;; esac;; esac; printf '%d%s' "$n" "$s"; }
 
-dom=$((10#$(date +%d)))
-nth=$(( (dom-1)/7 + 1 ))
-ord_word(){ case "$1" in 1)echo first;;2)echo second;;3)echo third;;4)echo fourth;;5)echo fifth;;*)echo "$1";; esac; }
-ord_short(){ case "$1" in 1)echo 1st;;2)echo 2nd;;3)echo 3rd;;*)echo "${1}th";; esac; }
-
-case "$MODE" in
-  words) printf "%s %s %s%s\n" "$(ord_word "$nth")" "$dow" "$tod" "$LEAP" ;;
-  1st)   printf "%s %s %s%s\n" "$(ord_short "$nth")" "$dow" "$tod" "$LEAP" ;;
-  noord) printf "%s %s%s\n" "$dow" "$tod" "$LEAP" ;;
-  *)     printf "%s %s %s%s\n" "$(ord_word "$nth")" "$dow" "$tod" "$LEAP" ;;
+case "$mode" in
+  1) printf '%s %s\n' "${ord_words[$n]}" "$tod" ;;
+  2) printf '%s %s\n' "$(ord_sup "$n")" "$tod" ;;
+  *) printf '%s %s\n' "$dow" "$tod" ;;
 esac

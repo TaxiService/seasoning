@@ -1,238 +1,206 @@
 #!/usr/bin/env bash
-# seasoning — entrypoint used by Waybar custom modules
+# seasoning: minimal CLI for Waybar integration
+# Why strict: avoid stray output that breaks JSON
+set -euo pipefail
+IFS=$'\n\t'
+LC_ALL=C
 
-set -o pipefail
-trap '' PIPE   # why: Waybar closes pipes; ignore SIGPIPE noise
+BASE_DIR="/usr/share/seasoning/plugins"
+CACHE_BASE="${HOME}/.cache/seasoning"
 
-SEAS_SYS="/usr/share/seasoning"
-SEAS_USER="${SEASONING_HOME:-$HOME/.config/seasoning}"
-SEAS_CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
-SEAS_SIGNAL_PAIR="${SEASONING_PAIR_SIGNAL:-5}"
+die(){ printf 'error: %s\n' "$*" >&2; exit 1; }
 
-usage() {
-  cat >&2 <<'USAGE'
-usage:
-  seasoning run clock
-  seasoning run pair [left|right]
-  seasoning ctl  {clock|pair} [set N|cycle|prev] [--output NAME|--global]
-  seasoning which-output
-  seasoning init
-  seasoning list [left|right|clock|pairs]
-  seasoning signal [N]
-  seasoning doctor
-USAGE
-  exit 2
+# -- helpers ---------------------------------------------------------------
+json_escape() {  # why: ensure plugin text becomes valid JSON string
+  local s=${1//\\/\\\\}; s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}; s=${s//$'\r'/}; s=${s//$'\n'/}
+  printf '%s' "$s"
 }
 
-which_output() {
-  if [[ -n "${WAYBAR_OUTPUT_NAME-}" ]]; then printf '%s\n' "$WAYBAR_OUTPUT_NAME"; return; fi
-  if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    o="$(hyprctl monitors -j | jq -r '.[] | select((.focused==true) or (.active==true)) | .name' | head -n1 || true)"
-    [[ -n "$o" ]] && { printf '%s\n' "$o"; return; }
-  fi
-  if command -v swaymsg >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    o="$(swaymsg -r -t get_outputs | jq -r '.[] | select(.focused==true) | .name' | head -n1 || true)"
-    [[ -n "$o" ]] && { printf '%s\n' "$o"; return; }
-  fi
-  printf '%s\n' "default"
+parse_output(){ printf '%s\n' "${WAYBAR_OUTPUT_NAME:-$("$0" which-output 2>/dev/null || echo default)}"; }
+
+state_dir(){ printf '%s/%s' "$CACHE_BASE" "$1"; }
+state_file(){ printf '%s/%s' "$(state_dir "$1")" "$2"; }
+
+read_int(){ local f="$1" d="${2:-0}"; [[ -f "$f" ]] && cat "$f" || printf '%s' "$d"; }
+write_int(){ local f="$1" v="$2"; mkdir -p "$(dirname "$f")"; printf '%s' "$v" >"$f"; }
+
+scan_plugins() {  # list absolute plugin paths for a kind, sorted naturally
+  local kind="$1"; local dir="$BASE_DIR/${kind}.d"
+  [[ -d "$dir" ]] || return
+  find "$dir" -maxdepth 1 -type f -executable -printf '%p\n' | sort -V
 }
 
-key_for(){ case "$1" in pair) printf pair;; clock) printf clock;; *) printf '%s' "$1";; esac; }
-state_path(){ mkdir -p "$SEAS_CACHE/$2"; printf '%s\n' "$SEAS_CACHE/$2/$(key_for "$1").state"; }
+count_plugins(){ scan_plugins "$1" | wc -l | tr -d ' '; }
 
-read_state() {
-  local k="$1" o="$2" n="${3:-0}" s=0 f; f="$(state_path "$k" "$o")"
-  [[ -s "$f" ]] && s="$(cat "$f" 2>/dev/null || echo 0)"
-  [[ "$s" =~ ^[0-9]+$ ]] || s=0
-  (( n>0 )) && s=$(( s % n ))
-  printf '%s\n' "$s"
-}
-write_state(){ local f t; f="$(state_path "$1" "$2")"; t="$(mktemp)"; printf '%s\n' "$3" >"$t"; mv -f "$t" "$f"; }
-cycle_state(){ local cur nxt n dir; cur="$(read_state "$1" "$2" 0)"; n="$3"; dir="${4:-cycle}"; case "$dir" in prev) nxt=$(( (cur-1+n)%n ));; *) nxt=$(( (cur+1)%n ));; esac; write_state "$1" "$2" "$nxt"; }
-set_state(){ local v="$3" n="$4"; (( n>0 )) && v=$(( v % n )); write_state "$1" "$2" "$v"; }
-
-# ---------- plugin discovery (robust, no empty lines) ----------
-canon_name(){ local b="${1##*/}"; b="${b#[0-9][0-9]-}"; printf '%s\n' "${b%%.*}"; }
-
-scan_plugins() {
-  # why: nullglob avoids literal patterns → no blank lines
-  local m="$1" d f
-  shopt -s nullglob
-  for d in "$SEAS_USER/plugins/$m.d" "$SEAS_SYS/plugins/$m.d"; do
-    [[ -d "$d" ]] || continue
-    for f in "$d"/*; do [[ -f "$f" && -x "$f" ]] && printf '%s\n' "$f"; done
-  done
-  shopt -u nullglob
+cls_from_path(){  # derive CSS class from filename
+  local b; b="$(basename "$1")"
+  b="${b%.*}"; b="${b//[^a-zA-Z0-9]+/-}"
+  printf 'clock--%s' "${b,,}"
 }
 
-list_clock_plugins(){ scan_plugins clock | sort -V; }
-list_names(){ local m="$1"; scan_plugins "$m" | while read -r p; do canon_name "$p"; done | sort -u; }
-
-# ---------- pairs ----------
-pairs_file(){ [[ -f "$SEAS_USER/pairs.conf" ]] && printf '%s\n' "$SEAS_USER/pairs.conf" || printf '%s\n' "$SEAS_SYS/pairs.conf"; }
-
-read_pairs() {
-  local pf; pf="$(pairs_file)" || return 1
-  local line left right
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"; line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [[ -z "$line" ]] && continue
-    left="${line%%|*}"; right="${line#*|}"
-    left="$(echo "$left" | sed -e 's/[[:space:]]*$//')"
-    right="$(echo "$right" | sed -e 's/^[[:space:]]*//')"
-    [[ -z "$left" || -z "$right" ]] && continue
-    if resolve_plugin left "$left" >/dev/null && resolve_plugin right "$right" >/dev/null; then
-      printf '%s|%s\n' "$left" "$right"
-    fi
-  done < "$pf"
-}
-pairs_count(){ read_pairs | wc -l | tr -d ' '; }
-
-nth_pair(){
-  local idx="$1" i=0 line
-  while IFS= read -r line; do (( i==idx )) && { printf '%s\n' "$line"; return; }; ((i++)); done < <(read_pairs)
-  return 1
+pair_line_at(){  # nth non-empty, non-comment line from pairs.conf
+  local idx="$1"
+  local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/seasoning/pairs.conf"
+  [[ -f "$cfg" ]] || cfg="/usr/share/seasoning/pairs.conf"
+  awk 'NF && $0 !~ /^[[:space:]]*#/' "$cfg" | sed -n "$((idx+1))p"
 }
 
-resolve_plugin(){
-  local m="$1" want="$2" p
-  while IFS= read -r p; do
-    [[ -n "$p" && "$(canon_name "$p")" == "$want" ]] && { printf '%s\n' "$p"; return; }
-  done < <(scan_plugins "$m")
-  return 1
-}
+# -- commands --------------------------------------------------------------
+cmd_which_output(){ parse_output "$@"; printf '\n'; }
 
-# ---------- hour-change ping (for L/R) ----------
-maybe_signal_hour_change(){
-  local stamp="$SEAS_CACHE/_last_hour_signalled"; mkdir -p "$SEAS_CACHE"
-  local nowh old=""; nowh="$(date +%Y%m%d%H)"
-  [[ -r "$stamp" ]] && old="$(cat "$stamp" 2>/dev/null || true)"
-  if [[ "$nowh" != "$old" ]]; then printf '%s' "$nowh" >"$stamp"; send_signal "$SEAS_SIGNAL_PAIR"; fi
-}
-
-# ---------- runners ----------
-run_clock(){
-  local out; out="$(which_output)"
-  # filter empties defensively
-  mapfile -t arr < <(list_clock_plugins | sed '/^[[:space:]]*$/d')
-  if (( ${#arr[@]} == 0 )); then
-    echo '{"text":"[seasoning:clock:no-plugins]"}'
-    exit 0
-  fi
-  local idx plugin name text
-  idx="$(read_state clock "$out" "${#arr[@]}")"
-  plugin="${arr[$idx]}"
-  if [[ -z "$plugin" || ! -x "$plugin" ]]; then
-    echo '{"text":"[seasoning:clock:bad-plugin]"}'
-    exit 0
-  fi
-  name="$(canon_name "$plugin")"
-  text="$("$plugin" 2>/dev/null || true)"
-  [[ -n "$text" ]] || text="[?]"
-  text="$(printf "%s" "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-  printf '{"text":"%s","class":"clock--%s"}\n' "$text" "$name"
-  maybe_signal_hour_change
-}
-
-run_pair_side(){
-  local side="${1:-left}"; [[ "$side" =~ ^(left|right)$ ]] || side="left"
-  local out n idx lr left right lp rp
-  out="$(which_output)"
-  n="$(pairs_count)"; (( n>0 )) || { echo "[seasoning:pairs:empty]"; exit 1; }
-  idx="$(read_state pair "$out" "$n")"
-  lr="$(nth_pair "$idx")" || lr="$(nth_pair 0)"
-  left="${lr%%|*}"; right="${lr#*|}"
-  lp="$(resolve_plugin left "$left")"; rp="$(resolve_plugin right "$right")"
-  if [[ "$side" == "left" ]]; then exec "$lp"; else exec "$rp"; fi
-}
-
-# ---------- control ----------
-ctl_module(){
-  local module="$1"; shift
-  local action="${1:-cycle}"; shift || true
-  local output="" global=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --output) output="$2"; shift 2 ;;
-      --global) global=true; shift ;;
-      set|cycle|prev) action="$1"; shift ;;
-      *) break ;;
-    esac
-  done
-  [[ -n "$output" ]] || $global || output="$(which_output)"
-  $global && output="all"
-  local cnt
-  case "$module" in
-    clock) cnt="$(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" ;;
-    pair)  cnt="$(pairs_count)" ;;
-    *) usage ;;
-  esac
-  (( cnt>0 )) || exit 1
-  case "$action" in
-    prev|cycle) cycle_state "$module" "$output" "$cnt" "$action" ;;
-    set)        set_state   "$module" "$output" "${1:-0}" "$cnt" ;;
-    *)          usage ;;
-  esac
-}
-
-# ---------- misc ----------
-do_init(){ mkdir -p "$SEAS_USER"; local dst="$SEAS_USER/pairs.conf"; [[ -e "$dst" ]] && { echo "$dst exists"; return 0; }; cp -n "$SEAS_SYS/pairs.conf" "$dst"; echo "wrote $dst"; }
-
-do_list(){
-  local what="${1:-all}"
+cmd_list(){
+  local what="${1:-}"; shift || true
   case "$what" in
-    left)  echo "left:";  list_names left ;;
-    right) echo "right:"; list_names right ;;
-    clock) echo "clock:"; list_clock_plugins | sed '/^[[:space:]]*$/d' | nl -ba ;;
+    clock)
+      echo "clock:"
+      local i=0
+      while IFS= read -r p; do printf '%5d\t%s\n' "$((++i))" "$p"; done < <(scan_plugins clock)
+      ;;
     pairs)
-      echo "pairs:"; local i=0 lr
-      while IFS= read -r lr; do printf "[%d] %s | %s\n" "$i" "${lr%%|*}" "${lr#*|}"; ((i++)); done < <(read_pairs)
+      local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/seasoning/pairs.conf"
+      [[ -f "$cfg" ]] || cfg="/usr/share/seasoning/pairs.conf"
+      echo "pairs: $cfg"
+      nl -ba "$cfg" | sed -n '1,200p'
       ;;
-    *)
-      echo "left:";  list_names left
-      echo "right:"; list_names right
-      echo "clock:"; list_clock_plugins | sed '/^[[:space:]]*$/d' | nl -ba
-      echo "pairs:"; local i=0 lr
-      while IFS= read -r lr; do printf "[%d] %s | %s\n" "$i" "${lr%%|*}" "${lr#*|}"; ((i++)); done < <(read_pairs)
-      ;;
+    *) die "usage: seasoning list {clock|pairs}";;
   esac
 }
 
-send_signal(){
-  local n="${1:-6}" sig="RTMIN+$n" pids
-  pids="$(pidof -x waybar 2>/dev/null || true)"
-  [[ -n "$pids" ]] && { kill -s "$sig" $pids 2>/dev/null || true; return 0; }
-  pkill -"${sig}" waybar 2>/dev/null || true
+run_clock_json(){  # why JSON wrapper: Waybar expects return-type=json
+  local out; out="$(parse_output "$@")"
+  local idx_file; idx_file="$(state_file "$out" clock.state)"
+  local idx; idx="$(read_int "$idx_file" 0)"
+
+  mapfile -t PLUGS < <(scan_plugins clock)
+  local total="${#PLUGS[@]}"
+  (( total > 0 )) || die "no clock plugins found"
+  (( idx >= 0 && idx < total )) || idx=0
+
+  local plug="${PLUGS[$idx]}"
+  # plugin outputs raw text for the clock
+  local text; text="$("$plug" 2>/dev/null || true)"
+  text="${text//$'\r'/}"
+  local class; class="$(cls_from_path "$plug")"
+  printf '{"text":"%s","class":"%s"}\n' "$(json_escape "$text")" "$class"
 }
 
-ok(){ printf 'OK %s\n' "$1"; }
-warn(){ printf 'WARN %s\n' "$1"; }
-fail(){ printf 'FAIL %s\n' "$1"; }
+run_pair_side(){  # why: pairs are strings, not JSON
+  local side="$1"; shift || true
+  local out; out="$(parse_output "$@")"
+  local idx_file; idx_file="$(state_file "$out" pair.state)"
+  local idx; idx="$(read_int "$idx_file" 0)"
 
-doctor(){
-  echo "== seasoning doctor =="
-  echo "clock plugins: $(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
-  list_clock_plugins | sed '/^[[:space:]]*$/d;s/^/  · /'
-  local out; out="$(/usr/bin/seasoning run clock 2>/dev/null)"
-  if echo "$out" | jq -e .text >/dev/null 2>&1; then ok "clock JSON ok (class=$(echo "$out" | jq -r .class))"; else fail "clock JSON invalid"; fi
-  echo "Waybar PIDs: $(pidof -x waybar || echo none)"
-  echo -n "Send RTMIN+5… "; send_signal 5; echo "done"
-  local o; o="$(which_output)"; echo "Output: $o"
-  echo "clock.state: $( [[ -e $SEAS_CACHE/$o/clock.state ]] && cat "$SEAS_CACHE/$o/clock.state" || echo 'missing' ) ($SEAS_CACHE/$o/clock.state)"
-  echo "pair.state : $( [[ -e $SEAS_CACHE/$o/pair.state ]]  && cat "$SEAS_CACHE/$o/pair.state"  || echo 'missing' ) ($SEAS_CACHE/$o/pair.state)"
+  local line; line="$(pair_line_at "$idx")"
+  [[ -n "$line" ]] || { echo ""; return; }
+
+  IFS='|' read -r L R <<<"$line"
+  local name=""
+  case "$side" in left)  name="$L";;
+                 right) name="$R";;
+                 *) die "invalid side";;
+  esac
+
+  # pick directory based on side
+  local dir="$BASE_DIR/${side}.d"
+  local path="$dir/$name.sh"
+  [[ -x "$path" ]] || { echo ""; return; }
+  "$path"
 }
 
+cmd_run(){
+  local what="${1:-}"; shift || true
+  case "$what" in
+    clock) run_clock_json "$@";;
+    pair)
+      local side="${1:-}"; shift || true
+      case "$side" in left|right) run_pair_side "$side" "$@";;
+        *) die "usage: seasoning run pair {left|right} [--output NAME]";;
+      esac
+      ;;
+    *) die "usage: seasoning run {clock|pair} ...";;
+  esac
+}
+
+bump_index(){  # why: persist per-output selection and signal Waybar
+  local which="$1" sig="$2" out="$3"
+  local file; file="$(state_file "$out" "$which.state")"
+  local idx; idx="$(read_int "$file" 0)"
+  local total
+  case "$which" in
+    clock) total="$(count_plugins clock)";;
+    pair)  total="$(awk 'NF && $0 !~ /^[[:space:]]*#/' "${XDG_CONFIG_HOME:-$HOME/.config}/seasoning/pairs.conf" 2>/dev/null | wc -l | tr -d ' ')"
+           [[ "$total" == "0" ]] && total="$(awk 'NF && $0 !~ /^[[:space:]]*#/' "/usr/share/seasoning/pairs.conf" | wc -l | tr -d ' ')" ;;
+    *) die "invalid index type";;
+  esac
+  (( total > 0 )) || total=1
+  idx=$(( (idx + 1) % total ))
+  write_int "$file" "$idx"
+  pkill -x -RTMIN+"$sig" waybar || true
+}
+
+cmd_ctl(){
+  local which="${1:-}"; shift || true
+  case "$which" in
+    clock)
+      [[ "${1:-}" == "cycle" ]] || die "usage: seasoning ctl clock cycle [--output NAME]"
+      shift || true
+      local out; out="$(parse_output "$@")"
+      bump_index "clock" 6 "$out"
+      ;;
+    pair)
+      [[ "${1:-}" == "cycle" ]] || die "usage: seasoning ctl pair cycle [--output NAME]"
+      shift || true
+      local out; out="$(parse_output "$@")"
+      bump_index "pair" 5 "$out"
+      ;;
+    *) die "usage: seasoning ctl {clock|pair} cycle [--output NAME]";;
+  esac
+}
+
+ctl_clock(){
+  local sub="$1"; shift || true
+  local out; out="$(parse_output)"
+  local f="$HOME/.cache/seasoning/$out/clock.state"
+  mkdir -p "$(dirname "$f")"
+  local idx; idx=$(cat "$f" 2>/dev/null || echo 0)
+  case "$sub" in
+    cycle) idx=$(( (idx+1) % $(/usr/bin/seasoning list clock | tail -n +2 | wc -l) ));;
+    prev)  idx=$(( (idx-1+$(/usr/bin/seasoning list clock | tail -n +2 | wc -l)) % $(/usr/bin/seasoning list clock | tail -n +2 | wc -l) ));;
+    set)   idx="${1:-0}";;
+    *)     echo "usage: seasoning ctl clock {cycle|prev|set N}" >&2; return 2;;
+  esac
+  echo "$idx" >"$f"
+  pkill -x -RTMIN+6 waybar || true
+}
+
+ctl_pair(){
+  local sub="$1"; shift || true
+  local out; out="$(parse_output)"
+  local f="$HOME/.cache/seasoning/$out/pair.state"
+  mkdir -p "$(dirname "$f")"
+  local idx; idx=$(cat "$f" 2>/dev/null || echo 0)
+  local total; total=$(awk 'NF && $0 !~ /^#/' "${XDG_CONFIG_HOME:-$HOME/.config}/seasoning/pairs.conf" 2>/dev/null | wc -l)
+  (( total > 0 )) || { echo "no pairs configured" >&2; return 1; }
+  case "$sub" in
+    cycle) idx=$(( (idx+1) % total ));;
+    prev)  idx=$(( (idx-1+total) % total ));;
+    set)   idx="${1:-0}";;
+    *)     echo "usage: seasoning ctl pair {cycle|prev|set N}" >&2; return 2;;
+  esac
+  echo "$idx" >"$f"
+  pkill -x -RTMIN+5 waybar || true
+}
+
+# -- main -------------------------------------------------------------------
 main(){
   local cmd="${1:-}"; shift || true
   case "$cmd" in
-    run) case "${1:-}" in clock) shift; run_clock ;; pair) shift; run_pair_side "${1:-left}" ;; *) usage ;; esac ;;
-    ctl) [[ $# -ge 2 ]] || usage; ctl_module "$@" ;;
-    which-output) which_output ;;
-    init) do_init ;;
-    list) do_list "${1:-all}" ;;
-    signal) send_signal "${1:-6}" ;;
-    doctor) doctor ;;
-    *) usage ;;
+    which-output) cmd_which_output "$@";;
+    list)         cmd_list "$@";;
+    run)          cmd_run "$@";;
+    ctl)          cmd_ctl "$@";;
+    *) die "usage: seasoning {which-output|list|run|ctl} ...";;
   esac
 }
 main "$@"

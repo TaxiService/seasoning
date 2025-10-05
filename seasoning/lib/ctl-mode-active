@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# usage:
+#   ctl-mode-active clock [--output OUT]
+#   ctl-mode-active pair-left  [--output OUT]
+#   ctl-mode-active pair-right [--output OUT]
+set -euo pipefail
+
+cat="${1:-}"; shift || true
+out=""
+while (($#)); do case "$1" in --output) out="$2"; shift 2;; *) shift;; esac; done
+out="${out:-${WAYBAR_OUTPUT_NAME:-$("/usr/bin/seasoning" which-output 2>/dev/null || echo default)}}"
+
+pairs_file() {
+  local u="$HOME/.config/seasoning/pairs.conf"
+  [[ -f "$u" ]] && { echo "$u"; return; }
+  echo "/usr/share/seasoning/pairs.conf"
+}
+
+active_clock_file() {
+  local dir="/usr/share/seasoning/plugins/clock.d"
+  local state="$HOME/.cache/seasoning/$out/clock.state"
+  local idx=$(cat "$state" 2>/dev/null || echo 0)
+  mapfile -t list < <(find "$dir" -maxdepth 1 -type f -executable -printf '%f\n' | sort)
+  echo "${list[$idx]}"
+}
+
+active_pair_names() {
+  local pf="$(pairs_file)"
+  local state="$HOME/.cache/seasoning/$out/pair.state"
+  local want=$(cat "$state" 2>/dev/null || echo 0)
+  # strip comments/empty, zero-based pick
+  awk -v n="$want" '
+    /^[[:space:]]*($|#)/{next}
+    {i++; if(i-1==n){print; exit}}
+  ' "$pf"
+}
+
+case "$cat" in
+  clock)
+    plug="$(active_clock_file)"
+    /usr/lib/seasoning/ctl-mode next "$out" "$plug"
+    pkill -x -RTMIN+6 waybar >/dev/null 2>&1 || true
+    ;;
+  pair-left|pair-right)
+    line="$(active_pair_names)" || exit 1
+    # expected form: left_name | right_name
+    left="${line%%|*}"; left="${left//[[:space:]]/}"
+    right="${line#*|}"; right="${right//[[:space:]]/}"
+    if [[ "$cat" == "pair-left" ]]; then
+      # find matching left plugin file
+      plug=$(find /usr/share/seasoning/plugins/left.d -maxdepth 1 -type f -executable -printf '%f\n' \
+             | sort | awk -v k="$left" '$0 ~ k{print; exit}')
+    else
+      plug=$(find /usr/share/seasoning/plugins/right.d -maxdepth 1 -type f -executable -printf '%f\n' \
+             | sort | awk -v k="$right" '$0 ~ k{print; exit}')
+    fi
+    [[ -n "${plug:-}" ]] || exit 1
+    /usr/lib/seasoning/ctl-mode next "$out" "$plug"
+    pkill -x -RTMIN+5 waybar >/dev/null 2>&1 || true
+    ;;
+  *)
+    echo "usage: $0 {clock|pair-left|pair-right} [--output OUT]" >&2; exit 2;;
+esac

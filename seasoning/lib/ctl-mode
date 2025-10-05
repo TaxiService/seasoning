@@ -1,102 +1,53 @@
-# =====================================================================
 # /usr/lib/seasoning/ctl-mode
-# Cycle mode for current plugin and signal Waybar.
-# Usage: ctl-mode left|right|clock cycle --output OUT
-# =====================================================================
 #!/usr/bin/env bash
-set -o pipefail
-LC_ALL=C
+# Persist and cycle "mode" per plugin id and output; then signal Waybar.
+set -euo pipefail
 
-die(){ printf '%s\n' "$*" >&2; exit 1; }
+sig_for() {
+  local id="${1:-}"
+  # Allow override: --signal N
+  if [[ "${SIGNAL_OVERRIDE:-}" =~ ^[0-9]+$ ]]; then echo "$SIGNAL_OVERRIDE"; return; fi
+  case "$id" in
+    *left*|*right*) echo 5 ;;
+    *clock*|hms|barclock-sextants) echo 6 ;;
+    *) echo 5 ;;
+  esac
+}
 
-kind="$1"; action="$2"; shift 2 || true
-OUT=""
+usage(){ echo "usage: ctl-mode {get|set|cycle} <plugin-id> [--output NAME] [--signal N] [value]"; exit 2; }
+
+[[ $# -ge 2 ]] || usage
+cmd="$1"; shift
+plugin="$1"; shift
+
+OUT="${WAYBAR_OUTPUT_NAME:-default}"
+SIGNAL_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --output) OUT="$2"; shift 2;;
-    *) shift;;
+    --output) OUT="$2"; shift 2 ;;
+    --signal) SIGNAL_OVERRIDE="$2"; shift 2 ;;
+    *) val="${1-}"; shift ;;
   esac
 done
-OUT="${OUT:-${WAYBAR_OUTPUT_NAME:-default}}"
 
-cache="$HOME/.cache/seasoning/$OUT"; mkdir -p "$cache"
+state_dir="${HOME}/.cache/seasoning/${OUT}"
+mkdir -p "$state_dir"
+file="${state_dir}/mode.${plugin}"
 
-# resolve current plugin path by kind
-pairs_conf="/usr/share/seasoning/config/pairs.conf"
-plugdir_left="/usr/share/seasoning/plugins/left.d"
-plugdir_right="/usr/share/seasoning/plugins/right.d"
-plugdir_clock="/usr/share/seasoning/plugins/clock.d"
+current=$(cat "$file" 2>/dev/null || echo 0)
 
-# list clock plugins in numeric order
-list_clock() {
-  # prints absolute paths sorted by numeric prefix
-  find "$plugdir_clock" -maxdepth 1 -type f -executable -printf '%f\n' \
-   | sort -n | while read -r f; do printf '%s/%s\n' "$plugdir_clock" "$f"; done
-}
-
-# get active left/right plugin basename from pairs.conf and pair.state
-current_side_plugin() {
-  local side="$1"      # left|right
-  local idx_file="$cache/pair.state"
-  local idx=0; [[ -f "$idx_file" ]] && idx="$(<"$idx_file")"
-  # read pairs.conf, skip comments/empties, pick (idx) line then extract side field
-  local line
-  line="$(grep -v '^\s*#' "$pairs_conf" | sed '/^\s*$/d' | sed -n "$((idx+1))p")" || return 1
-  # format: left|right (e.g., "narrative-noord|season-dfyear")
-  local left right
-  IFS='|' read -r left right <<<"$line"
-  if [[ "$side" == "left" ]]; then printf '%s\n' "$left"; else printf '%s\n' "$right"; fi
-}
-
-# map plugin name to absolute path
-side_path() {
-  local side="$1" name="$2" dir
-  if [[ "$side" == "left" ]]; then dir="$plugdir_left"; else dir="$plugdir_right"; fi
-  # prefer exact .sh, else any executable starting with name
-  if [[ -x "$dir/$name.sh" ]]; then printf '%s\n' "$dir/$name.sh"; return 0; fi
-  # fallback: first executable matching name*
-  local p
-  p="$(find "$dir" -maxdepth 1 -type f -executable -name "${name}*" | head -n1)"
-  [[ -n "$p" ]] && printf '%s\n' "$p" || return 1
-}
-
-signal_waybar() {
-  local s="$1"
-  # send to all Waybar processes owned by user
-  pkill -x -RTMIN+"$s" waybar >/dev/null 2>&1 || true
-}
-
-case "$kind:$action" in
-  left:cycle|right:cycle)
-    name="$(current_side_plugin "$kind")" || die "cannot read pairs.conf"
-    path="$(side_path "$kind" "$name")"   || die "plugin not found: $name"
-    # ask plugin for modes
-    mapfile -t modes < <("$path" --list-modes 2>/dev/null) || modes=()
-    if ((${#modes[@]}==0)); then die "plugin has no modes: $name"; fi
-    st="$cache/$kind.${name}.mode"
-    cur=""; [[ -f "$st" ]] && cur="$(<"$st")"
-    idx=0; for i in "${!modes[@]}"; do [[ "${modes[$i]}" == "$cur" ]] && idx="$i"; done
-    idx=$(( (idx+1) % ${#modes[@]} ))
-    printf '%s' "${modes[$idx]}" > "$st"
-    signal_waybar 5
+case "$cmd" in
+  get)
+    echo "${current}"
     ;;
-  clock:cycle)
-    # resolve current clock plugin
-    cidx_file="$cache/clock.state"; cidx=0; [[ -f "$cidx_file" ]] && cidx="$(<"$cidx_file")"
-    mapfile -t clocks < <(list_clock)
-    ((${#clocks[@]})) || die "no clock plugins"
-    # 0-based index into sorted list
-    cidx=$(( cidx % ${#clocks[@]} ))
-    path="${clocks[$cidx]}"
-    # ask for modes
-    mapfile -t modes < <("$path" --list-modes 2>/dev/null) || modes=()
-    ((${#modes[@]})) || die "clock plugin has no modes: $(basename "$path")"
-    st="$cache/clock.$(basename "$path").mode"
-    cur=""; [[ -f "$st" ]] && cur="$(<"$st")"
-    idx=0; for i in "${!modes[@]}"; do [[ "${modes[$i]}" == "$cur" ]] && idx="$i"; done
-    idx=$(( (idx+1) % ${#modes[@]} ))
-    printf '%s' "${modes[$idx]}" > "$st"
-    signal_waybar 6
+  set)
+    : "${val:?value required}"; echo "${val}" >"$file"
+    kill -RTMIN+"$(sig_for "$plugin")" $(pidof -x waybar) 2>/dev/null || true
     ;;
-  *) die "usage: ctl-mode <left|right|clock> cycle --output OUT";;
+  cycle)
+    next=$(( current + 1 ))
+    echo "${next}" >"$file"
+    kill -RTMIN+"$(sig_for "$plugin")" $(pidof -x waybar) 2>/dev/null || true
+    ;;
+  *) usage ;;
 esac
