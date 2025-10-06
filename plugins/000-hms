@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+m="${SEASONING_MODE:-0}"
+H="$(date +%H)"; M="$(date +%M)"; S="$(date +%S)"
+case "$m" in
+  0) txt="$H:$M" ;;
+  1) txt="$H·$M" ;;
+  2) txt="$H:$M:$S" ;;
+  *) txt="$H·$M:$S" ;;
+esac
+printf '{"text":"%s","class":"mid--hms m%s"}\n' "$txt" "$m"

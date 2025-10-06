@@ -1,296 +1,215 @@
 #!/usr/bin/env bash
-# seasoning — entrypoint used by Waybar custom modules
+# seasoning — single CLI for Waybar modules (mid clock + side pairs)
+set -euo pipefail
+trap '' PIPE
 
-set -o pipefail
-trap '' PIPE   # why: Waybar closes pipes; ignore SIGPIPE noise
-
+# --- dirs ---
+SEAS_USER_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/seasoning"
+SEAS_USER_PLUG="$SEAS_USER_CFG/plugins"
 SEAS_SYS="/usr/share/seasoning"
-SEAS_USER="${SEASONING_HOME:-$HOME/.config/seasoning}"
+SEAS_SYS_PLUG="$SEAS_SYS/plugins"
+SEAS_CFG_FILE_USER="$SEAS_USER_CFG/config.json"
+SEAS_CFG_FILE_SYS="$SEAS_SYS/config.json"
 SEAS_CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
-SEAS_SIGNAL_PAIR="${SEASONING_PAIR_SIGNAL:-5}"
+
+# --- signals (overridable by config.json) ---
+SIG_MID=6
+SIG_SIDES=5
 
 usage() {
   cat >&2 <<'USAGE'
 usage:
-  seasoning run clock
-  seasoning run pair [left|right]
-  seasoning ctl  {clock|pair} [set N|cycle|prev] [--output NAME|--global]
+  seasoning run mid
+  seasoning run side {left|right}
+  seasoning ctl mid   {cycle|prev|set N|mode-next}   [--output NAME]
+  seasoning ctl sides {cycle|prev|set N|mode-next}   [--which left|right] [--output NAME]
   seasoning which-output
-  seasoning init
-  seasoning list [left|right|clock|pairs]
-  seasoning signal [N]
   seasoning doctor
 USAGE
   exit 2
 }
 
+# ---------- helpers ----------
 which_output() {
   if [[ -n "${WAYBAR_OUTPUT_NAME-}" ]]; then printf '%s\n' "$WAYBAR_OUTPUT_NAME"; return; fi
   if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    o="$(hyprctl monitors -j | jq -r '.[] | select((.focused==true) or (.active==true)) | .name' | head -n1 || true)"
-    [[ -n "$o" ]] && { printf '%s\n' "$o"; return; }
+    hyprctl monitors -j | jq -r '[.[]|select(.focused==true or .active==true)][0].name // empty' | sed -n '1p' && return 0 || true
   fi
   if command -v swaymsg >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    o="$(swaymsg -r -t get_outputs | jq -r '.[] | select(.focused==true) | .name' | head -n1 || true)"
-    [[ -n "$o" ]] && { printf '%s\n' "$o"; return; }
+    swaymsg -r -t get_outputs | jq -r '[.[]|select(.focused==true)][0].name // empty' | sed -n '1p' && return 0 || true
   fi
-  printf '%s\n' "default"
+  printf 'default\n'
 }
 
-key_for(){ case "$1" in pair) printf pair;; clock) printf clock;; *) printf '%s' "$1";; esac; }
-state_path(){ mkdir -p "$SEAS_CACHE/$2"; printf '%s\n' "$SEAS_CACHE/$2/$(key_for "$1").state"; }
+send_signal(){ local n="${1:-6}" sig="RTMIN+$n"; pkill -x -"$sig" waybar 2>/dev/null || true; }
 
-read_state() {
-  local k="$1" o="$2" n="${3:-0}" s=0 f; f="$(state_path "$k" "$o")"
-  [[ -s "$f" ]] && s="$(cat "$f" 2>/dev/null || echo 0)"
-  [[ "$s" =~ ^[0-9]+$ ]] || s=0
-  (( n>0 )) && s=$(( s % n ))
-  printf '%s\n' "$s"
-}
-write_state(){ local f t; f="$(state_path "$1" "$2")"; t="$(mktemp)"; printf '%s\n' "$3" >"$t"; mv -f "$t" "$f"; }
-cycle_state(){ local cur nxt n dir; cur="$(read_state "$1" "$2" 0)"; n="$3"; dir="${4:-cycle}"; case "$dir" in prev) nxt=$(( (cur-1+n)%n ));; *) nxt=$(( (cur+1)%n ));; esac; write_state "$1" "$2" "$nxt"; }
-set_state(){ local v="$3" n="$4"; (( n>0 )) && v=$(( v % n )); write_state "$1" "$2" "$v"; }
+canon(){ local b="${1##*/}"; printf '%s\n' "$b"; }
 
-# ---------- plugin discovery (robust, no empty lines) ----------
-canon_name(){ local b="${1##*/}"; b="${b#[0-9][0-9]-}"; printf '%s\n' "${b%%.*}"; }
+ensure_cache(){ mkdir -p "$SEAS_CACHE/$1"; }
 
-scan_plugins() {
-  # why: nullglob avoids literal patterns → no blank lines
-  local m="$1" d f
-  shopt -s nullglob
-  for d in "$SEAS_USER/plugins/$m.d" "$SEAS_SYS/plugins/$m.d"; do
-    [[ -d "$d" ]] || continue
-    for f in "$d"/*; do [[ -f "$f" && -x "$f" ]] && printf '%s\n' "$f"; done
-  done
-  shopt -u nullglob
+f_state(){ printf '%s/%s.state' "$SEAS_CACHE/$1" "$2"; }             # ($out, key) → path
+f_mode(){  printf '%s/mode.%s.state' "$SEAS_CACHE/$1" "$(canon "$2")"; } # per-plugin mode
+
+read_int(){ local v; v="$(cat "$1" 2>/dev/null || echo 0)"; [[ "$v" =~ ^[0-9]+$ ]] || v=0; printf '%s\n' "$v"; }
+write_int(){ local p="$1" v="$2"; mkdir -p "$(dirname "$p")"; printf '%s' "$v" >"$p".tmp && mv -f "$p".tmp "$p"; }
+
+# ---------- config ----------
+cfg_file(){ [[ -f "$SEAS_CFG_FILE_USER" ]] && printf '%s\n' "$SEAS_CFG_FILE_USER" || printf '%s\n' "$SEAS_CFG_FILE_SYS"; }
+cfg_has(){ jq -e "$1" "$(cfg_file)" >/dev/null 2>&1; }
+cfg_get(){ jq -r "$1" "$(cfg_file)"; }
+
+load_config() {
+  if ! command -v jq >/dev/null 2>&1; then echo '{"text":"[seasoning:jq-missing]"}'; exit 0; fi
+  local f; f="$(cfg_file)"; [[ -f "$f" ]] || { echo '{"text":"[seasoning:config-missing]"}'; exit 0; }
+  # signals
+  SIG_MID=$(jq -r '.signals.mid // 6' "$f")
+  SIG_SIDES=$(jq -r '.signals.sides // 5' "$f")
 }
 
-list_clock_plugins(){ scan_plugins clock | sort -V; }
-list_names(){ local m="$1"; scan_plugins "$m" | while read -r p; do canon_name "$p"; done | sort -u; }
-
-# ---------- pairs ----------
-pairs_file(){ [[ -f "$SEAS_USER/pairs.conf" ]] && printf '%s\n' "$SEAS_USER/pairs.conf" || printf '%s\n' "$SEAS_SYS/pairs.conf"; }
-
-read_pairs() {
-  local pf; pf="$(pairs_file)" || return 1
-  local line left right
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"; line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [[ -z "$line" ]] && continue
-    left="${line%%|*}"; right="${line#*|}"
-    left="$(echo "$left" | sed -e 's/[[:space:]]*$//')"
-    right="$(echo "$right" | sed -e 's/^[[:space:]]*//')"
-    [[ -z "$left" || -z "$right" ]] && continue
-    if resolve_plugin left "$left" >/dev/null && resolve_plugin right "$right" >/dev/null; then
-      printf '%s|%s\n' "$left" "$right"
-    fi
-  done < "$pf"
-}
-pairs_count(){ read_pairs | wc -l | tr -d ' '; }
-
-nth_pair(){
-  local idx="$1" i=0 line
-  while IFS= read -r line; do (( i==idx )) && { printf '%s\n' "$line"; return; }; ((i++)); done < <(read_pairs)
+# ---------- discovery ----------
+resolve_plugin_path(){
+  local name="$1"
+  if [[ -x "$SEAS_USER_PLUG/$name" ]]; then printf '%s\n' "$SEAS_USER_PLUG/$name"; return; fi
+  if [[ -x "$SEAS_SYS_PLUG/$name" ]];  then printf '%s\n' "$SEAS_SYS_PLUG/$name";  return; fi
   return 1
 }
 
-resolve_plugin(){
-  local m="$1" want="$2" p
-  while IFS= read -r p; do
-    [[ -n "$p" && "$(canon_name "$p")" == "$want" ]] && { printf '%s\n' "$p"; return; }
-  done < <(scan_plugins "$m")
-  return 1
+list_mid(){
+  cfg_get '.mid.plugins[]?' 2>/dev/null || true
 }
 
-# ---------- hour-change ping (for L/R) ----------
-maybe_signal_hour_change(){
-  local stamp="$SEAS_CACHE/_last_hour_signalled"; mkdir -p "$SEAS_CACHE"
-  local nowh old=""; nowh="$(date +%Y%m%d%H)"
-  [[ -r "$stamp" ]] && old="$(cat "$stamp" 2>/dev/null || true)"
-  if [[ "$nowh" != "$old" ]]; then printf '%s' "$nowh" >"$stamp"; send_signal "$SEAS_SIGNAL_PAIR"; fi
+pairs_len(){
+  cfg_get '.sides.pairs | length' 2>/dev/null || echo 0
+}
+pair_names_at(){
+  local i="$1"
+  cfg_get ".sides.pairs[$i] | @tsv" 2>/dev/null
+}
+
+mode_count_for(){
+  local name="$1" which="$2" # mid|sides
+  if [[ "$which" == "mid" ]]; then
+    cfg_get ".mid.mode_count[\"$name\"] // 1" 2>/dev/null || echo 1
+  else
+    cfg_get ".sides.mode_count[\"$name\"] // 1" 2>/dev/null || echo 1
+  fi
 }
 
 # ---------- runners ----------
-run_clock(){
-  local out idx plugin name raw
-  out="$(which_output)"
-  mapfile -t arr < <(list_clock_plugins | sed '/^[[:space:]]*$/d')
-  if (( ${#arr[@]} == 0 )); then
-    printf '{"text":"[seasoning:clock:no-plugins]","class":"clock--err"}\n'
-    exit 0
-  fi
-  idx="$(read_state clock "$out" "${#arr[@]}")"
-  plugin="${arr[$idx]}"
-  [[ -x "$plugin" ]] || { printf '{"text":"[seasoning:clock:bad-plugin]","class":"clock--err"}\n'; exit 0; }
-
-  raw="$("$plugin" 2>/dev/null || true)"
-  if [[ "$raw" == \{* ]]; then
-    # plugin already output JSON
-    printf '%s\n' "$raw"
-  else
-    # wrap plain text as Waybar JSON
-    name="$(canon_name "$plugin")"
-    raw="$(printf '%s' "$raw" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-    printf '{"text":"%s","class":"clock--%s"}\n' "$raw" "$name"
-  fi
-
-  maybe_signal_hour_change
+run_mid(){
+  load_config
+  local out; out="$(which_output)"; ensure_cache "$out"
+  mapfile -t arr < <(list_mid)
+  local n="${#arr[@]}"; (( n>0 )) || { echo '{"text":"[seasoning:mid:no-plugins]"}'; exit 0; }
+  local idx; idx="$(read_int "$(f_state "$out" mid)")"; (( idx%=n ))
+  local name="${arr[$idx]}"
+  local p; p="$(resolve_plugin_path "$name")" || { echo '{"text":"[seasoning:mid:bad-plugin]"}'; exit 0; }
+  local modes; modes="$(mode_count_for "$name" mid)"
+  local mfile; mfile="$(f_mode "$out" "$name")"
+  local mm; mm="$(read_int "$mfile")"; (( modes>0 )) && (( mm%=modes ))
+  SEASONING_MODE="$mm" "$p" 2>/dev/null || echo '{"text":"[seasoning:mid:err]"}'
 }
 
-
-run_pair_side(){
+run_side(){
+  load_config
   local side="${1:-left}"; [[ "$side" =~ ^(left|right)$ ]] || side="left"
-  local out n idx lr left right lp rp
-  out="$(which_output)"
-  n="$(pairs_count)"; (( n>0 )) || { echo "[seasoning:pairs:empty]"; exit 1; }
-  idx="$(read_state pair "$out" "$n")"
-  lr="$(nth_pair "$idx")" || lr="$(nth_pair 0)"
-  left="${lr%%|*}"; right="${lr#*|}"
-  lp="$(resolve_plugin left "$left")"; rp="$(resolve_plugin right "$right")"
-  if [[ "$side" == "left" ]]; then exec "$lp"; else exec "$rp"; fi
+  local out; out="$(which_output)"; ensure_cache "$out"
+  local n; n="$(pairs_len)"; (( n>0 )) || { echo "[seasoning:sides:empty]"; exit 0; }
+  local idx; idx="$(read_int "$(f_state "$out" pair)")"; (( idx%=n ))
+  local lr; lr="$(pair_names_at "$idx")"
+  local L="${lr%%$'\t'*}"; local R="${lr#*$'\t'}"
+  local target="$L"; [[ "$side" == "right" ]] && target="$R"
+  local p; p="$(resolve_plugin_path "$target")" || { echo "[seasoning:$side:bad-plugin]"; exit 0; }
+  local modes; modes="$(mode_count_for "$target" sides)"
+  local mfile; mfile="$(f_mode "$out" "$target")"
+  local mm; mm="$(read_int "$mfile")"; (( modes>0 )) && (( mm%=modes ))
+  SEASONING_MODE="$mm" "$p" 2>/dev/null || echo "[seasoning:$side:err]"
 }
 
 # ---------- control ----------
-ctl_module(){
-  local module="$1"; shift
+ctl_mid(){
+  load_config
   local action="${1:-cycle}"; shift || true
-  local output="" global=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --output) output="$2"; shift 2 ;;
-      --global) global=true; shift ;;
-      set|cycle|prev) action="$1"; shift ;;
-      *) break ;;
-    esac
-  done
-  [[ -n "$output" ]] || $global || output="$(which_output)"
-  $global && output="all"
-    local cnt
-    case "$module" in
-      clock) cnt="$(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" ;;
-      pair)  cnt="$(pairs_count)" ;;
-      *) usage ;;
-    esac
-    (( cnt>0 )) || exit 1
+  local out=""; while [[ $# -gt 0 ]]; do case "$1" in --output) out="$2"; shift 2;; *) break;; esac; done
+  [[ -n "$out" ]] || out="$(which_output)"; ensure_cache "$out"
+  mapfile -t arr < <(list_mid); local n="${#arr[@]}"; (( n>0 )) || exit 0
+  local st; st="$(f_state "$out" mid)"
   case "$action" in
-    prev|cycle) cycle_state "$module" "$output" "$cnt" "$action" ;;
-    set)        set_state   "$module" "$output" "${1:-0}" "$cnt" ;;
-    *)          usage ;;
-  esac
-  case "$module" in
-    clock) send_signal 6 ;;   # matches custom/seasoning-clock
-    pair)  send_signal 5 ;;   # matches left/right modules
-  esac
-}
-
-# cycle HMS "mode" (per-output) and ping waybar
-ctl_clock_mode_next() {
-  local out=""
-  # parse --output if provided
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --output) out="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  # fallback to active output or "default"
-  [[ -z "$out" ]] && out="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
-  local dir="$HOME/.cache/seasoning/$out"
-  mkdir -p "$dir"
-  local f="$dir/clock.mode"
-  local mode=0
-  [[ -f "$f" ]] && mode=$(<"$f")
-  mode=$(((mode + 1) % 4))     # 4 modes: 0..3
-  printf "%s" "$mode" >"$f"
-
-  # nudge waybar's custom clock
-  pkill -x -RTMIN+6 waybar 2>/dev/null || true
-}
-
-# ---------- misc ----------
-do_init(){ mkdir -p "$SEAS_USER"; local dst="$SEAS_USER/pairs.conf"; [[ -e "$dst" ]] && { echo "$dst exists"; return 0; }; cp -n "$SEAS_SYS/pairs.conf" "$dst"; echo "wrote $dst"; }
-
-do_list(){
-  local what="${1:-all}"
-  case "$what" in
-    left)  echo "left:";  list_names left ;;
-    right) echo "right:"; list_names right ;;
-    clock) echo "clock:"; list_clock_plugins | sed '/^[[:space:]]*$/d' | nl -ba ;;
-    pairs)
-      echo "pairs:"; local i=0 lr
-      while IFS= read -r lr; do printf "[%d] %s | %s\n" "$i" "${lr%%|*}" "${lr#*|}"; ((i++)); done < <(read_pairs)
+    prev)  write_int "$st" $(( ( $(read_int "$st") - 1 + n) % n )) ;;
+    cycle) write_int "$st" $(( ( $(read_int "$st") + 1 ) % n )) ;;
+    set)   local v="${1:-0}"; write_int "$st" $(( v % n )) ;;
+    mode-next)
+      local name="${arr[$(read_int "$st")]}"
+      local mfile; mfile="$(f_mode "$out" "$name")"
+      local modes; modes="$(mode_count_for "$name" mid)"
+      write_int "$mfile" $(( ( $(read_int "$mfile") + 1 ) % (modes>0?modes:1) ))
+      send_signal "$SIG_MID"; return 0
       ;;
-    *)
-      echo "left:";  list_names left
-      echo "right:"; list_names right
-      echo "clock:"; list_clock_plugins | sed '/^[[:space:]]*$/d' | nl -ba
-      echo "pairs:"; local i=0 lr
-      while IFS= read -r lr; do printf "[%d] %s | %s\n" "$i" "${lr%%|*}" "${lr#*|}"; ((i++)); done < <(read_pairs)
-      ;;
-  esac
-}
-
-send_signal(){
-  local n="${1:-6}" sig="RTMIN+$n" pids
-  pids="$(pidof -x waybar 2>/dev/null || true)"
-  [[ -n "$pids" ]] && { kill -s "$sig" $pids 2>/dev/null || true; return 0; }
-  pkill -"${sig}" waybar 2>/dev/null || true
-}
-
-ok(){ printf 'OK %s\n' "$1"; }
-warn(){ printf 'WARN %s\n' "$1"; }
-fail(){ printf 'FAIL %s\n' "$1"; }
-
-doctor(){
-  echo "== seasoning doctor =="
-  echo "clock plugins: $(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
-  list_clock_plugins | sed '/^[[:space:]]*$/d;s/^/  · /'
-  local out; out="$(/usr/bin/seasoning run clock 2>/dev/null)"
-  if echo "$out" | jq -e .text >/dev/null 2>&1; then ok "clock JSON ok (class=$(echo "$out" | jq -r .class))"; else fail "clock JSON invalid"; fi
-  echo "Waybar PIDs: $(pidof -x waybar || echo none)"
-  echo -n "Send RTMIN+5… "; send_signal 5; echo "done"
-  local o; o="$(which_output)"; echo "Output: $o"
-  echo "clock.state: $( [[ -e $SEAS_CACHE/$o/clock.state ]] && cat "$SEAS_CACHE/$o/clock.state" || echo 'missing' ) ($SEAS_CACHE/$o/clock.state)"
-  echo "pair.state : $( [[ -e $SEAS_CACHE/$o/pair.state ]]  && cat "$SEAS_CACHE/$o/pair.state"  || echo 'missing' ) ($SEAS_CACHE/$o/pair.state)"
-}
-
-# small shims that reuse the generic ctl_module
-ctl_clock() {        # called as: ctl_clock clock cycle --output NAME
-  local _sub="${1:-}"; shift || true
-  ctl_module clock "$@"
-}
-ctl_pair() {
-  ctl_module pair "$@"
-}
-
-main(){
-  local cmd="${1:-}"; shift || true
-  case "$cmd" in
-    run) case "${1:-}" in clock) shift; run_clock ;; pair) shift; run_pair_side "${1:-left}" ;; *) usage ;; esac ;;
-    ctl)
-      [[ $# -ge 1 ]] || { echo "usage: seasoning ctl {clock|pair} ..." >&2; exit 2; }
-      sub="$1"; shift
-      case "$sub" in
-        clock)
-          # existing sub-commands you already have (e.g. cycle, set, prev) keep working:
-          case "${1:-}" in
-            mode-next) shift; ctl_clock_mode_next "$@" ;;
-            *)         ctl_clock "$sub" "$@" ;;   # your existing handler
-          esac
-          ;;
-        pair)
-          ctl_pair "$@"                            # unchanged
-          ;;
-        *)
-          echo "usage: seasoning ctl {clock|pair} ..." >&2; exit 2 ;;
-      esac
-      ;;
-    which-output) which_output ;;
-    init) do_init ;;
-    list) do_list "${1:-all}" ;;
-    signal) send_signal "${1:-6}" ;;
-    doctor) doctor ;;
     *) usage ;;
   esac
+  send_signal "$SIG_MID"
 }
-main "$@"
+
+ctl_sides(){
+  load_config
+  local action="${1:-cycle}"; shift || true
+  local which=""; local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --which)  which="$2"; shift 2;;
+      --output) out="$2";  shift 2;;
+      *) break;;
+    esac
+  done
+  [[ -n "$out" ]] || out="$(which_output)"; ensure_cache "$out"
+  local n; n="$(pairs_len)"; (( n>0 )) || exit 0
+  local st; st="$(f_state "$out" pair)"
+  case "$action" in
+    prev)  write_int "$st" $(( ( $(read_int "$st") - 1 + n) % n )) ;;
+    cycle) write_int "$st" $(( ( $(read_int "$st") + 1 ) % n )) ;;
+    set)   local v="${1:-0}"; write_int "$st" $(( v % n )) ;;
+    mode-next)
+      [[ "$which" =~ ^(left|right)$ ]] || which="left"
+      local idx; idx="$(read_int "$st")"; (( idx%=n ))
+      local lr; lr="$(pair_names_at "$idx")"
+      local L="${lr%%$'\t'*}"; local R="${lr#*$'\t'}"
+      local name="$L"; [[ "$which" == "right" ]] && name="$R"
+      local mfile; mfile="$(f_mode "$out" "$name")"
+      local modes; modes="$(mode_count_for "$name" sides)"
+      write_int "$mfile" $(( ( $(read_int "$mfile") + 1 ) % (modes>0?modes:1) ))
+      send_signal "$SIG_SIDES"; return 0
+      ;;
+    *) usage ;;
+  esac
+  send_signal "$SIG_SIDES"
+}
+
+doctor(){
+  load_config
+  echo "== seasoning doctor =="
+  echo "output: $(which_output)"
+  echo "signals: mid=$SIG_MID sides=$SIG_SIDES"
+  echo "mid plugins:"; list_mid | nl -ba
+  echo "pairs:"; cfg_get '.sides.pairs[] | join(" | ")'
+}
+
+# ---------- main ----------
+case "${1:-}" in
+  run)
+    case "${2:-}" in
+      mid)  run_mid ;;
+      side) run_side "${3:-left}" ;;
+      *) usage ;;
+    esac
+    ;;
+  ctl)
+    case "${2:-}" in
+      mid)   shift 2; ctl_mid   "$@" ;;
+      sides) shift 2; ctl_sides "$@" ;;
+      *) usage ;;
+    esac
+    ;;
+  which-output) which_output ;;
+  doctor) doctor ;;
+  *) usage ;;
+esac

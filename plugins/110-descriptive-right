@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+m="${SEASONING_MODE:-0}"
+LC_TIME=C
+case "$m" in
+  0) date +%B ;;
+  1) date +%Y ;;
+esac

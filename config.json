@@ -1,0 +1,22 @@
+{
+  "signals": { "mid": 6, "sides": 5 },
+  "mid": {
+    "plugins": ["000-hms", "010-sextants"],
+    "mode_count": {
+      "000-hms": 4,
+      "010-sextants": 3
+    }
+  },
+  "sides": {
+    "pairs": [
+      ["110-descriptive-left", "110-descriptive-right"],
+      ["100-precise-left",     "100-precise-right"]
+    ],
+    "mode_count": {
+      "110-descriptive-left":  2,
+      "110-descriptive-right": 2,
+      "100-precise-left":      1,
+      "100-precise-right":     1
+    }
+  }
+}

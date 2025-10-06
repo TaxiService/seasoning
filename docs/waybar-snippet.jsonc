@@ -1,0 +1,35 @@
+{
+  "custom/seasoning-left": {
+    "exec": "/usr/bin/seasoning run side left",
+    "return-type": "string",
+    "interval": 60,
+    "signal": 5,
+    "min-length": 22,
+    "align": 1.0,
+    "on-click": "/usr/bin/seasoning ctl sides cycle --output \"$WAYBAR_OUTPUT_NAME\"",
+    "on-click-right": "/usr/bin/seasoning ctl sides mode-next --which left --output \"$WAYBAR_OUTPUT_NAME\"",
+    "tooltip": false
+  },
+  "custom/seasoning-right": {
+    "exec": "/usr/bin/seasoning run side right",
+    "return-type": "string",
+    "interval": 60,
+    "signal": 5,
+    "min-length": 18,
+    "align": 0.0,
+    "on-click": "/usr/bin/seasoning ctl sides cycle --output \"$WAYBAR_OUTPUT_NAME\"",
+    "on-click-right": "/usr/bin/seasoning ctl sides mode-next --which right --output \"$WAYBAR_OUTPUT_NAME\"",
+    "tooltip": false
+  },
+  "custom/seasoning-mid": {
+    "exec": "/usr/bin/seasoning run mid",
+    "return-type": "json",
+    "interval": 1,
+    "signal": 6,
+    "min-length": 14,
+    "align": 0.5,
+    "on-click": "/usr/bin/seasoning ctl mid cycle --output \"$WAYBAR_OUTPUT_NAME\"",
+    "on-click-right": "/usr/bin/seasoning ctl mid mode-next --output \"$WAYBAR_OUTPUT_NAME\"",
+    "tooltip": false
+  }
+}
