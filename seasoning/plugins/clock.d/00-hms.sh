@@ -37,3 +37,4 @@ case "$MODE" in
     ;;
   *) printf "%s:%s\n" "$H" "$M";;
 esac
+main
