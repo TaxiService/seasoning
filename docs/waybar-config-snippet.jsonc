@@ -3,7 +3,8 @@
     "exec": "/usr/bin/seasoning run clock",
     "return-type": "json",
     "interval": 1,
-    "on-click": "/usr/bin/seasoning ctl clock cycle",
+    "on-click": "/usr/bin/seasoning ctl clock cycle --output \"$WAYBAR_OUTPUT_NAME\"",
+    "on-click-right": "/usr/bin/seasoning ctl clock mode-next --output \"$WAYBAR_OUTPUT_NAME\"",
     "tooltip": false
   },
   "custom/seasoning-left": {

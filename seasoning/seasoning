@@ -112,27 +112,31 @@ maybe_signal_hour_change(){
 
 # ---------- runners ----------
 run_clock(){
-  local out; out="$(which_output)"
-  # filter empties defensively
+  local out idx plugin name raw
+  out="$(which_output)"
   mapfile -t arr < <(list_clock_plugins | sed '/^[[:space:]]*$/d')
   if (( ${#arr[@]} == 0 )); then
-    echo '{"text":"[seasoning:clock:no-plugins]"}'
+    printf '{"text":"[seasoning:clock:no-plugins]","class":"clock--err"}\n'
     exit 0
   fi
-  local idx plugin name text
   idx="$(read_state clock "$out" "${#arr[@]}")"
   plugin="${arr[$idx]}"
-  if [[ -z "$plugin" || ! -x "$plugin" ]]; then
-    echo '{"text":"[seasoning:clock:bad-plugin]"}'
-    exit 0
+  [[ -x "$plugin" ]] || { printf '{"text":"[seasoning:clock:bad-plugin]","class":"clock--err"}\n'; exit 0; }
+
+  raw="$("$plugin" 2>/dev/null || true)"
+  if [[ "$raw" == \{* ]]; then
+    # plugin already output JSON
+    printf '%s\n' "$raw"
+  else
+    # wrap plain text as Waybar JSON
+    name="$(canon_name "$plugin")"
+    raw="$(printf '%s' "$raw" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    printf '{"text":"%s","class":"clock--%s"}\n' "$raw" "$name"
   fi
-  name="$(canon_name "$plugin")"
-  text="$("$plugin" 2>/dev/null || true)"
-  [[ -n "$text" ]] || text="[?]"
-  text="$(printf "%s" "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-  printf '{"text":"%s","class":"clock--%s"}\n' "$text" "$name"
+
   maybe_signal_hour_change
 }
+
 
 run_pair_side(){
   local side="${1:-left}"; [[ "$side" =~ ^(left|right)$ ]] || side="left"
@@ -161,18 +165,46 @@ ctl_module(){
   done
   [[ -n "$output" ]] || $global || output="$(which_output)"
   $global && output="all"
-  local cnt
-  case "$module" in
-    clock) cnt="$(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" ;;
-    pair)  cnt="$(pairs_count)" ;;
-    *) usage ;;
-  esac
-  (( cnt>0 )) || exit 1
+    local cnt
+    case "$module" in
+      clock) cnt="$(list_clock_plugins | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" ;;
+      pair)  cnt="$(pairs_count)" ;;
+      *) usage ;;
+    esac
+    (( cnt>0 )) || exit 1
   case "$action" in
     prev|cycle) cycle_state "$module" "$output" "$cnt" "$action" ;;
     set)        set_state   "$module" "$output" "${1:-0}" "$cnt" ;;
     *)          usage ;;
   esac
+  case "$module" in
+    clock) send_signal 6 ;;   # matches custom/seasoning-clock
+    pair)  send_signal 5 ;;   # matches left/right modules
+  esac
+}
+
+# cycle HMS "mode" (per-output) and ping waybar
+ctl_clock_mode_next() {
+  local out=""
+  # parse --output if provided
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) out="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  # fallback to active output or "default"
+  [[ -z "$out" ]] && out="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
+  local dir="$HOME/.cache/seasoning/$out"
+  mkdir -p "$dir"
+  local f="$dir/clock.mode"
+  local mode=0
+  [[ -f "$f" ]] && mode=$(<"$f")
+  mode=$(((mode + 1) % 4))     # 4 modes: 0..3
+  printf "%s" "$mode" >"$f"
+
+  # nudge waybar's custom clock
+  pkill -x -RTMIN+6 waybar 2>/dev/null || true
 }
 
 # ---------- misc ----------
@@ -222,11 +254,37 @@ doctor(){
   echo "pair.state : $( [[ -e $SEAS_CACHE/$o/pair.state ]]  && cat "$SEAS_CACHE/$o/pair.state"  || echo 'missing' ) ($SEAS_CACHE/$o/pair.state)"
 }
 
+# small shims that reuse the generic ctl_module
+ctl_clock() {        # called as: ctl_clock clock cycle --output NAME
+  local _sub="${1:-}"; shift || true
+  ctl_module clock "$@"
+}
+ctl_pair() {
+  ctl_module pair "$@"
+}
+
 main(){
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     run) case "${1:-}" in clock) shift; run_clock ;; pair) shift; run_pair_side "${1:-left}" ;; *) usage ;; esac ;;
-    ctl) [[ $# -ge 2 ]] || usage; ctl_module "$@" ;;
+    ctl)
+      [[ $# -ge 1 ]] || { echo "usage: seasoning ctl {clock|pair} ..." >&2; exit 2; }
+      sub="$1"; shift
+      case "$sub" in
+        clock)
+          # existing sub-commands you already have (e.g. cycle, set, prev) keep working:
+          case "${1:-}" in
+            mode-next) shift; ctl_clock_mode_next "$@" ;;
+            *)         ctl_clock "$sub" "$@" ;;   # your existing handler
+          esac
+          ;;
+        pair)
+          ctl_pair "$@"                            # unchanged
+          ;;
+        *)
+          echo "usage: seasoning ctl {clock|pair} ..." >&2; exit 2 ;;
+      esac
+      ;;
     which-output) which_output ;;
     init) do_init ;;
     list) do_list "${1:-all}" ;;
