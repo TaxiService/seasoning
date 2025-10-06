@@ -1,8 +1,3 @@
-# =====================================================================
-# /usr/share/seasoning/plugins/clock.d/00-hms.sh
-# Modes: hm-blink | hms | hm-gap
-# Prints plain text; seasoning wraps to JSON.
-# =====================================================================
 #!/usr/bin/env bash
 set -o pipefail; LC_ALL=C
 
