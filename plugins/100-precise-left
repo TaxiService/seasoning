@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-date +%Y-%m-%d
+OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
+F="$HOME/.cache/seasoning/$OUT/side.left.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
+case "$M" in
+  0) date +'%Y-%m-%d' ;;
+  1) date +'%Y-%m' ;;
+  2) date +'%Y W%V' ;;
+  3) date +'%j/365' ;;
+esac

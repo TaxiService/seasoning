@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-m="${SEASONING_MODE:-0}"
-H=$(date +%H); M=$(date +%M); S=$(date +%S)
 
-pct() { # 0..P-1 lit in a 10-cell bar
-  local val="$1" max="$2"
-  awk -v v="$val" -v mx="$max" 'BEGIN{p=int((v/mx)*10); if(p<0)p=0; if(p>10)p=10; print p}'
-}
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+MODE_FILE="$CACHE/mode.010-sextants.state"
+mkdir -p "$CACHE"
 
-# smooth/discrete/full
-case "$m" in
-  0) hp=$(pct "$(echo "$H + $M/60 + $S/3600" | bc -l)" 24) ;;
-  1) hp=$(pct "$H" 24) ;;
-  *) hp=$(pct "$H" 24);;
+mode=0
+[[ -f "$MODE_FILE" ]] && read -r mode < "$MODE_FILE" || true
+mode=$(( mode % 3 ))
+
+# three visibly different mock modes so you can confirm right-clicks
+case "$mode" in
+  0) txt="|#######   |#####     |######    |" ;;
+  1) txt="|11111 11111 11111|00000 00000|" ;;
+  2) txt="|01110 01110 01110|00000 00000|" ;;
 esac
-mp=$(pct "$(echo "$M + $S/60" | bc -l)" 60)
-sp=$(pct "$S" 60)
 
-bar(){ local p="$1"; printf '|'; for i in $(seq 1 10); do if (( i<=p )); then printf '#'; else printf ' '; fi; done; }
-printf '{"text":"%s%s%s|","class":"mid--sextants m%s"}\n' "$(bar "$hp")" "$(bar "$mp")" "$(bar "$sp")" "$m"
+printf '{"text":"%s","class":"mid--010-sextants"}\n' "$txt"

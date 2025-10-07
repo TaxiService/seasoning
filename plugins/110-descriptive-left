@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-m="${SEASONING_MODE:-0}"
-LC_TIME=C
-dow="$(date +%A | tr '[:upper:]' '[:lower:]')"
-H=$(date +%H)
-case "$H" in
-  00|01|02|03|04|05) tod="night" ;;
-  06|07|08|09|10|11) tod="morning" ;;
-  12|13|14|15|16|17) tod="afternoon" ;;
-  *)                 tod="evening" ;;
-esac
-case "$m" in
+OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
+F="$HOME/.cache/seasoning/$OUT/side.left.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
+dow="$(date +%A)"; h=$((10#$(date +%H)))
+if   (( h<6 )); then tod="night"
+elif (( h<12)); then tod="morning"
+elif (( h<18)); then tod="afternoon"
+else               tod="evening"; fi
+case "$M" in
   0) printf "%s %s\n" "$dow" "$tod" ;;
-  1) d=$(date +%-d); suf="th"; case "$d" in 1|21|31) suf="st";; 2|22) suf="nd";; 3|23) suf="rd";; esac
-     printf "%s the %d%s\n" "$dow" "$d" "$suf" ;;
+  1) printf "%s %s\n" "${dow,,}" "$tod" ;;
+  2) printf "%.3s %.3s\n" "$dow" "$tod" ;;
+  3) printf "%s %s\n" "$(date +%a)" "$tod" ;;
 esac

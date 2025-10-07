@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-m="${SEASONING_MODE:-0}"
-LC_TIME=C
-case "$m" in
-  0) date +%B ;;
-  1) date +%Y ;;
+OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
+F="$HOME/.cache/seasoning/$OUT/side.right.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
+case "$M" in
+  0) date +'%B %Y' ;;
+  1) date +'%d %B' ;;
+  2) date +'W%V %Y' ;;
+  3) date +'%Y-%m-%d' ;;
 esac

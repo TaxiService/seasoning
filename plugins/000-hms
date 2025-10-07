@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-m="${SEASONING_MODE:-0}"
-H="$(date +%H)"; M="$(date +%M)"; S="$(date +%S)"
-case "$m" in
-  0) txt="$H:$M" ;;
-  1) txt="$H·$M" ;;
-  2) txt="$H:$M:$S" ;;
-  *) txt="$H·$M:$S" ;;
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+MODE_FILE="$CACHE/mode.000-hms.state"
+mkdir -p "$CACHE"
+
+mode=0
+[[ -f "$MODE_FILE" ]] && read -r mode < "$MODE_FILE" || true
+case "${mode:-0}" in
+  0) fmt='+%H:%M' ;;
+  1) fmt='+%H·%M' ;;
+  2) fmt='+%H:%M:%S' ;;
+  3) fmt='+%H·%M·%S' ;;
+  *) fmt='+%H:%M' ;;
 esac
-printf '{"text":"%s","class":"mid--hms m%s"}\n' "$txt" "$m"
+
+txt="$(date "$fmt")"
+printf '{"text":"%s","class":"mid--000-hms"}\n' "$txt"

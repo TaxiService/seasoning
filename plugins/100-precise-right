@@ -1,3 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-date +%H:%M
+OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
+F="$HOME/.cache/seasoning/$OUT/side.right.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
+d=$(date +%-d); suf=th; case $((d%10)) in 1) suf=st;;2)suf=nd;;3)suf=rd;; esac; [[ $d -ge 11 && $d -le 13 ]] && suf=th
+case "$M" in
+  0) printf "%s %d%s\n" "$(date +%B)" "$d" "$suf" ;;
+  1) printf "%s\n" "$(date +%A)" ;;
+  2) printf "W%02d\n" "$(date +%V)" ;;
+  3) printf "DOY %03d\n" "$(date +%j)" ;;
+esac
