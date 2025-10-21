@@ -1,11 +1,34 @@
 #!/usr/bin/env bash
+# Side: precise RIGHT — modes:
+# 0) CEST(+0200) d001 w01 m01
+# 1) CEST(+0200) w01 m01
+# 2) CEST w01 m01
+# 3) CEST d001 w01 m01
+# 4) d001 w01 m01
 set -euo pipefail
-OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
-F="$HOME/.cache/seasoning/$OUT/side.right.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
-d=$(date +%-d); suf=th; case $((d%10)) in 1) suf=st;;2)suf=nd;;3)suf=rd;; esac; [[ $d -ge 11 && $d -le 13 ]] && suf=th
-case "$M" in
-  0) printf "%s %d%s\n" "$(date +%B)" "$d" "$suf" ;;
-  1) printf "%s\n" "$(date +%A)" ;;
-  2) printf "W%02d\n" "$(date +%V)" ;;
-  3) printf "DOY %03d\n" "$(date +%j)" ;;
+LC_TIME=C
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+ID="$(basename "$0")"                       # 100-precise-right
+MODE_FILE="$CACHE/mode.$ID.state"
+mkdir -p "$CACHE"
+
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 5 ))
+fi
+
+# one date(1) call for efficiency
+IFS=, read -r Z z j V mm < <(date +%Z,%z,%j,%V,%m)
+d="d${j}"; w="w${V}"; m="m${mm}"
+Zo="${Z}(${z})"
+
+case "$mode" in
+  0) printf "%s %s %s %s\n" "$Zo" "$d" "$w" "$m" ;;
+  1) printf "%s %s %s\n"    "$Zo"      "$w" "$m" ;;
+  2) printf "%s %s %s\n"    "$Z"       "$w" "$m" ;;
+  3) printf "%s %s %s %s\n" "$Z"  "$d" "$w" "$m" ;;
+  4) printf "%s %s %s\n"          "$d" "$w" "$m" ;;
 esac

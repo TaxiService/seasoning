@@ -1,15 +1,75 @@
 #!/usr/bin/env bash
+# Side: descriptive LEFT — three modes:
+#  0) "tuesday morning"
+#  1) "4th tuesday morning"
+#  2) "fourth tuesday morning"
+
 set -euo pipefail
-OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
-F="$HOME/.cache/seasoning/$OUT/side.left.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
-dow="$(date +%A)"; h=$((10#$(date +%H)))
-if   (( h<6 )); then tod="night"
-elif (( h<12)); then tod="morning"
-elif (( h<18)); then tod="afternoon"
-else               tod="evening"; fi
-case "$M" in
-  0) printf "%s %s\n" "$dow" "$tod" ;;
-  1) printf "%s %s\n" "${dow,,}" "$tod" ;;
-  2) printf "%.3s %.3s\n" "$dow" "$tod" ;;
-  3) printf "%s %s\n" "$(date +%a)" "$tod" ;;
+LC_TIME=C
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
+ID="$(basename "$0")"                       # e.g. 110-descriptive-left
+MODE_FILE="$CACHE/$OUT/mode.$ID.state"
+mkdir -p "$CACHE/$OUT"
+BANG=''
+case "$(date +%m-%d)" in
+  02-29) BANG='!' ;;  # use 02-29 in real code
+esac
+
+# --- read mode (0..2) ---
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
+fi
+
+# --- helpers ---
+dow_lower() { date +%A | tr '[:upper:]' '[:lower:]'; }
+
+tod_bucket() {
+  local h=$((10#$(date +%H)))
+  case "$h" in
+    0|1|2|3|4|5)       printf night;;
+    6|7|8|9|10|11)     printf morning;;
+    12|13|14|15|16|17) printf afternoon;;
+    *)                 printf evening;;
+  esac
+}
+
+# nth weekday-of-month (1..5)
+nth_weekday() {
+  local d=$((10#$(date +%d)))      # day-of-month
+  printf '%d' $(( (d - 1) / 7 + 1 ))
+}
+
+ordinal_num() { # 1->1st 2->2nd 3->3rd 4->4th 5->5th
+  case "$1" in
+    1) printf '1st';;
+    2) printf '2nd';;
+    3) printf '3rd';;
+    *) printf '%dth' "$1";;
+  esac
+}
+
+ordinal_word() { # 1..5 -> first..fifth
+  case "$1" in
+    1) printf first;;
+    2) printf second;;
+    3) printf third;;
+    4) printf fourth;;
+    5) printf fifth;;
+    *) printf '%dth' "$1";;  # fallback, shouldn't happen
+  esac
+}
+
+# --- render ---
+dow="$(dow_lower)"
+tod="$(tod_bucket)"
+nth="$(nth_weekday)"
+
+case "$mode" in
+  0) printf "%s %s%s\n"                 "$(dow_lower)" "$(tod_bucket)"             "$BANG" ;;
+  1) printf "%s %s %s%s\n"              "$(ordinal_num  "$(nth_weekday)")"  "$(dow_lower)" "$(tod_bucket)" "$BANG" ;;
+  2) printf "%s %s %s%s\n"              "$(ordinal_word "$(nth_weekday)")"  "$(dow_lower)" "$(tod_bucket)" "$BANG" ;;
 esac

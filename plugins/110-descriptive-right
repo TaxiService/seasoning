@@ -1,10 +1,52 @@
 #!/usr/bin/env bash
+# Side: descriptive RIGHT — 4 modes
+# 0) midautumn 12025
+# 1) october, midautumn 12025
+# 2) october 2025
+# 3) midautumn 2025
+
 set -euo pipefail
-OUT="$(/usr/bin/seasoning which-output 2>/dev/null || echo default)"
-F="$HOME/.cache/seasoning/$OUT/side.right.mode"; M=0; [[ -f "$F" ]] && M=$(<"$F")
-case "$M" in
-  0) date +'%B %Y' ;;
-  1) date +'%d %B' ;;
-  2) date +'W%V %Y' ;;
-  3) date +'%Y-%m-%d' ;;
+LC_TIME=C
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
+ID="$(basename "$0")"                       # 110-descriptive-right
+MODE_FILE="$CACHE/$OUT/mode.$ID.state"
+mkdir -p "$CACHE/$OUT"
+
+# read per-plugin mode (wrap 0..3)
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 4 ))
+fi
+
+y=$(date +%Y)
+dfy=$(( 10#$y + 10000 ))                    # “dfyear” → 12025 when Y=2025
+m=$(date +%-m)
+month="$(date +%B | tr '[:upper:]' '[:lower:]')"
+
+# season + phase (dec starts winter; phase = early/mid/late)
+case "$m" in
+  12) season=winter; phase=early ;;
+   1) season=winter; phase=mid   ;;
+   2) season=winter; phase=late  ;;
+   3) season=spring; phase=early ;;
+   4) season=spring; phase=mid   ;;
+   5) season=spring; phase=late  ;;
+   6) season=summer; phase=early ;;
+   7) season=summer; phase=mid   ;;
+   8) season=summer; phase=late  ;;
+   9) season=autumn; phase=early ;;
+  10) season=autumn; phase=mid   ;;
+  11) season=autumn; phase=late  ;;
+esac
+
+phase_season="${phase}${season}"            # e.g. midautumn
+
+case "$mode" in
+  0) printf "%s %d\n"        "$phase_season" "$dfy"      ;;
+  1) printf "%s, %s %d\n"    "$month" "$phase_season" "$dfy" ;;
+  2) printf "%s %d\n"        "$month" "$y"               ;;
+  3) printf "%s %d\n"        "$phase_season" "$y"        ;;
 esac
