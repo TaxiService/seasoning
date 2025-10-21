@@ -21,14 +21,14 @@ if [[ -r "$MODE_FILE" ]]; then
 fi
 
 # one date(1) call for efficiency
-IFS=, read -r Z z j V mm < <(date +%Z,%z,%j,%V,%m)
+IFS=, read -r Z z j V mm Y < <(date +%Z,%z,%j,%V,%m,%Y)
 d="d${j}"; w="w${V}"; m="m${mm}"
-Zo="${Z}(${z})"
+o="(${z})"; Zo="${Z}${o}"
 
 case "$mode" in
-  0) printf "%s %s %s %s\n" "$Zo" "$d" "$w" "$m" ;;
-  1) printf "%s %s %s\n"    "$Zo"      "$w" "$m" ;;
-  2) printf "%s %s %s\n"    "$Z"       "$w" "$m" ;;
-  3) printf "%s %s %s %s\n" "$Z"  "$d" "$w" "$m" ;;
-  4) printf "%s %s %s\n"          "$d" "$w" "$m" ;;
+  0) printf "%s %s %s\n"    "$Zo" "$m" "$Y" ;;
+  1) printf "%s %s %s\n"    "$Zo" "$w" "$Y" ;;
+  2) printf "%s %s %s %s\n" "$Z" "$w" "$m" "$Y" ;;
+  3) printf "%s %s %s %s\n" "$o" "$w" "$m" "$Y" ;;
+  4) printf "%s %s %s %s\n" "$d" "$w" "$m" "$Y" ;;
 esac

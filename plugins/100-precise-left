@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Side: precise LEFT — modes:
-# 0) Tue 29 October '25
-# 1) Tue 29 October 2025
-# 2) Tuesday 29 October 2025
-# 3) 29 October 2025
-# 4) 29 October '25
+# 0) Tue 29 October
+# 1) Tuesday 29 October
+# 2) 29 October
 set -euo pipefail
 LC_TIME=C
 
@@ -17,16 +15,14 @@ mkdir -p "$CACHE"
 mode=0
 if [[ -r "$MODE_FILE" ]]; then
   read -r m <"$MODE_FILE" || true
-  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 5 ))
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
 fi
 
 # one date(1) call for efficiency
-IFS=, read -r aA A B d Y y < <(date +%a,%A,%B,%d,%Y,%y)
+IFS=, read -r aA A B d < <(date +%a,%A,%B,%d)
 
 case "$mode" in
-  0) printf "%s %s %s '%s\n" "$aA" "$d" "$B" "$y" ;;
-  1) printf "%s %s %s %s\n"   "$aA" "$d" "$B" "$Y" ;;
-  2) printf "%s %s %s %s\n"   "$A"  "$d" "$B" "$Y" ;;
-  3) printf "%s %s %s\n"            "$d" "$B" "$Y" ;;
-  4) printf "%s %s '%s\n"           "$d" "$B" "$y" ;;
+  0) printf "%s %s %s\n" "$aA" "$d" "$B" ;;
+  1) printf "%s %s %s\n"   "$A"  "$d" "$B" ;;
+  2) printf "%s %s\n"           "$d" "$B" ;;
 esac
