@@ -1,75 +1,64 @@
 #!/usr/bin/env bash
-# Side: descriptive LEFT — three modes:
-#  0) "tuesday morning"
-#  1) "4th tuesday morning"
-#  2) "fourth tuesday morning"
-
+# Side: descriptive LEFT — with "last" for final weekday of month
 set -euo pipefail
-LC_TIME=C
 
-OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}"
 CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}"
-ID="$(basename "$0")"                       # e.g. 110-descriptive-left
+ID="$(basename "$0")"                       # 110-descriptive-left
 MODE_FILE="$CACHE/$OUT/mode.$ID.state"
-mkdir -p "$CACHE/$OUT"
-BANG=''
-case "$(date +%m-%d)" in
-  02-29) BANG='!' ;;  # use 02-29 in real code
-esac
 
-# --- read mode (0..2) ---
+# --- mode (0..2) ---
 mode=0
 if [[ -r "$MODE_FILE" ]]; then
   read -r m <"$MODE_FILE" || true
-  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$((m%3))
 fi
 
 # --- helpers ---
-dow_lower() { date +%A | tr '[:upper:]' '[:lower:]'; }
+dow_short()  { date +%A | tr '[:upper:]' '[:lower:]'; }   # e.g. tuesday
+tod_bucket(){ h=$((10#$(date +%H))); case "$h" in 0|1|2|3|4|5) echo night;;
+                                               6|7|8|9|10|11) echo morning;;
+                                               12|13|14|15|16|17) echo afternoon;;
+                                               *) echo evening;; esac; }
 
-tod_bucket() {
-  local h=$((10#$(date +%H)))
-  case "$h" in
-    0|1|2|3|4|5)       printf night;;
-    6|7|8|9|10|11)     printf morning;;
-    12|13|14|15|16|17) printf afternoon;;
-    *)                 printf evening;;
-  esac
+nth_weekday(){ d=$((10#$(date +%-d))); echo $(( (d-1)/7 + 1 )); }  # 1..5
+
+is_last_weekday_of_month(){
+  m_now="$(date +%m)"
+  m_next="$(date -d '+7 days' +%m)"
+  [[ "$m_now" != "$m_next" ]]
 }
 
-# nth weekday-of-month (1..5)
-nth_weekday() {
-  local d=$((10#$(date +%d)))      # day-of-month
-  printf '%d' $(( (d - 1) / 7 + 1 ))
+ordinal_numeric(){ n=$1; case $((n%100)) in 11|12|13) s="th";;
+                                *) case $((n%10)) in 1)s="st";;2)s="nd";;3)s="rd";;*)s="th";; esac;; esac
+                   printf "%d%s" "$n" "$s"; }
+
+ordinal_word_nth(){
+  if is_last_weekday_of_month; then
+    printf "last"
+  else
+    case "$1" in
+      1) printf "first";;
+      2) printf "second";;
+      3) printf "third";;
+      4) printf "fourth";;
+      5) printf "fifth";;
+      *) printf "%s" "$(ordinal_numeric "$1")";;
+    esac
+  fi
 }
 
-ordinal_num() { # 1->1st 2->2nd 3->3rd 4->4th 5->5th
-  case "$1" in
-    1) printf '1st';;
-    2) printf '2nd';;
-    3) printf '3rd';;
-    *) printf '%dth' "$1";;
-  esac
-}
-
-ordinal_word() { # 1..5 -> first..fifth
-  case "$1" in
-    1) printf first;;
-    2) printf second;;
-    3) printf third;;
-    4) printf fourth;;
-    5) printf fifth;;
-    *) printf '%dth' "$1";;  # fallback, shouldn't happen
-  esac
-}
+# leap-day bang (only on Feb 29)
+BANG=''
+case "$(date +%m-%d)" in 02-29) BANG='!';; esac
 
 # --- render ---
-dow="$(dow_lower)"
+dow="$(dow_short)"
 tod="$(tod_bucket)"
 nth="$(nth_weekday)"
 
 case "$mode" in
-  0) printf "%s %s%s\n"                 "$(dow_lower)" "$(tod_bucket)"             "$BANG" ;;
-  1) printf "%s %s %s%s\n"              "$(ordinal_num  "$(nth_weekday)")"  "$(dow_lower)" "$(tod_bucket)" "$BANG" ;;
-  2) printf "%s %s %s%s\n"              "$(ordinal_word "$(nth_weekday)")"  "$(dow_lower)" "$(tod_bucket)" "$BANG" ;;
+  0) printf "%s %s%s\n" "$dow" "$tod" "$BANG" ;;
+  1) printf "%s %s %s%s\n" "$(ordinal_numeric "$nth")" "$dow" "$tod" "$BANG" ;;
+  2) printf "%s %s %s%s\n" "$(ordinal_word_nth "$nth")" "$dow" "$tod" "$BANG" ;;
 esac

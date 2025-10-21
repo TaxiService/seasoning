@@ -42,6 +42,7 @@ _cycle_idx(){ # cur n dir -> nxt
   case "$dir" in prev) echo $(( (cur-1+n)%n ));; *) echo $(( (cur+1)%n ));; esac
 }
 send_signal(){ local n="${1:-6}"; pkill -x -RTMIN+"$n" waybar 2>/dev/null || true; }
+list_outputs(){ shopt -s nullglob; for d in "$SEAS_CACHE"/*; do [[ -d "$d" ]] && printf '%s\n' "${d##*/}"; done; shopt -u nullglob; }
 
 # ---------- discovery ----------
 _list_mid(){
@@ -113,6 +114,15 @@ ctl_mid(){
       local base="${arr[$cur]##*/}" mf; mf="$(_state_path "$out" "mode.$base")"
       _write_int "$mf" $(( $(_read_int "$mf") + 1 ))
       send_signal 6 ;;
+    mode-sync)
+      f="$(_state_path "$out" mid)"; cur="$(_read_int "$f")"; (( cur = cur % ${#arr[@]} ))
+      base="${arr[$cur]##*/}"
+      src="$(_state_path "$out" "mode.$base")"
+      val="$(_read_int "$src")"
+      while IFS= read -r o; do
+        _write_int "$(_state_path "$o" "mode.$base")" "$val"
+      done < <(list_outputs)
+      send_signal 6 ;;
     *) usage ;;
   esac
 }
@@ -140,6 +150,15 @@ ctl_sides(){
       f="$(_state_path "$out" pairs)"; cur="$(_read_int "$f")"; (( cur = cur % ${#pre[@]} ))
       local base="${pre[$cur]}-$which" mf; mf="$(_state_path "$out" "mode.$base")"
       _write_int "$mf" $(( $(_read_int "$mf") + 1 ))
+      send_signal 5 ;;
+    mode-sync)
+      f="$(_state_path "$out" pairs)"; cur="$(_read_int "$f")"; (( cur = cur % ${#pre[@]} ))
+      base="${pre[$cur]}-$which"
+      src="$(_state_path "$out" "mode.$base")"
+      val="$(_read_int "$src")"
+      while IFS= read -r o; do
+        _write_int "$(_state_path "$o" "mode.$base")" "$val"
+      done < <(list_outputs)
       send_signal 5 ;;
     *) usage ;;
   esac
