@@ -14,7 +14,7 @@ mkdir -p "$CACHE"
 mode=0
 if [[ -r "$MODE_FILE" ]]; then
   read -r m <"$MODE_FILE" || true
-  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 4 ))
 fi
 
 # --- UTF-8 encoder (emit codepoint as bytes; no \U in output) ---
@@ -53,35 +53,40 @@ row_fill() {
   printf '%s' "$out"
 }
 
-# ensure length is exactly 60 (pad/trunc)
-row_fix60() {
-  local s="$1" n
-  n=${#s}
-  if (( n < 60 )); then
-    printf '%s%*s' "$s" $((60-n)) "" | tr ' ' '0'
-  else
-    printf '%s' "${s:0:60}"
-  fi
+row_single_dot() {
+  local p="$1" i out=""
+  (( p<0 )) && p=0
+  (( p>59 )) && p=59
+  for ((i=0;i<60;i++)); do
+    if (( i == p )); then out+='1'; else out+='0'; fi
+  done
+  printf '%s' "$out"
 }
 
 # --- time ---
 read -r HH MM SS < <(date '+%H %M %S')
 H=$((10#$HH)); M=$((10#$MM)); S=$((10#$SS))
 
-row_top="$(row_fill "$S")"
+case "$mode" in
+  3)
+    if (( S == 0 )); then si=59; else si=$((S-1)); fi
+    row_top="$(row_single_dot "$si")"
+    ;;
+  *) row_top="$(row_fill "$S")"
+    ;;
+esac
+
 row_mid="$(row_fill "$M")"
 
 # hours row by mode
 case "$mode" in
-  0)  # smooth across 12h → 60 ticks
-      # minute within current 12h block, then scale to 0..59
-      mins_since=$(( (H % 12) * 60 + M ))   # 0..719
-      # scale 0..719 to 0..59 using integer math: floor(mins_since * 60 / 720)
-      hrs_count=$(( (mins_since * 60) / 720 ))
+  0|3)  # smooth across 12h → 60 ticks
+      mins_since=$(( (H % 12) * 60 + M )) # 0..719
+      hrs_count=$(( mins_since / 12 ))    # 0..59
       row_bot="$(row_fill "$hrs_count")"
       ;;
   1)  # discrete 11111 per passed hour
-      row_bot="$(row_fill $(((H % 12)*5)))"
+      row_bot="$(row_fill $(((H % 12)*5)))" # 0,5,...,55
       ;;
   2)  # discrete 01110 per passed hour (easier to count)
       keep=$(((H % 12)*5))
@@ -94,10 +99,6 @@ case "$mode" in
       row_bot="$outp"
       ;;
 esac
-
-row_top="$(row_fix60 "$row_top")"
-row_mid="$(row_fix60 "$row_mid")"
-row_bot="$(row_fix60 "$row_bot")"
 
 # --- pack 30 sextants, add dividers every 10 dots (5 sextants); center uses full '│' ---
 txt=""
