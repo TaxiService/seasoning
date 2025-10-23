@@ -1,0 +1,23 @@
+#custom-sep { opacity: 0.25;}
+#custom-seasoning-left,
+#custom-seasoning-right {
+  font-family: "Px437 IBM VGA 8x14", monospace;
+  font-size: 16px;
+  opacity: 0.5;
+}
+#custom-seasoning-mid.mid--000-hms {
+  font-family: "Px437 ToshibaTxL1 8x8", "URW Bookman", monospace;
+  font-size: 22px;
+  font-weight: 400;
+  margin:2 0 -2 0px;
+}
+#custom-seasoning-mid {
+  font-family: "Adwaita Mono", monospace;
+  font-size: 13px;
+  margin:0px;
+}
+#custom-update {
+  font-size: 16px;
+  min-width: 22px;
+  margin: 0 5 0 -5px;
+}

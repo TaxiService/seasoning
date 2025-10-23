@@ -1,90 +1,115 @@
 #!/usr/bin/env bash
-# mid: Sextants 3-in-1 barclock (top=secs, mid=mins, bot=hours) using U+1CE51..U+1CE8F
+# mid: Sextants clock — rows = seconds (top), minutes (mid), hours (bottom)
+# modes:
+#   0 = smooth hours (0..59 dots across 12h)
+#   1 = discrete hours, each passed hour = "11111"
+#   2 = discrete hours, each passed hour = "01110"
 set -euo pipefail
 
 OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
 CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
 MODE_FILE="$CACHE/mode.010-sextants.state"
 mkdir -p "$CACHE"
-mode=0; [[ -r "$MODE_FILE" ]] && read -r mode <"$MODE_FILE" || true
-case "${mode:-0}" in 0|1|2) :;; *) mode=0;; esac
 
-# --------- UTF-8 encoder ----------
-cp_utf8() { # $1 = integer codepoint (decimal or 0x..)
-  local cp=$1; [[ $cp == 0x* ]] && cp=$((cp))
-  if   ((cp<=0x7F));   then printf '\\x%02X' "$cp"
-  elif ((cp<=0x7FF));  then printf '\\x%02X\\x%02X' \
-      $((0xC0 | (cp>>6))) $((0x80 | (cp & 0x3F)))
-  elif ((cp<=0xFFFF)); then printf '\\x%02X\\x%02X\\x%02X' \
-      $((0xE0 | (cp>>12))) $((0x80 | ((cp>>6)&0x3F))) $((0x80 | (cp & 0x3F)))
-  else printf '\\x%02X\\x%02X\\x%02X\\x%02X' \
-      $((0xF0 | (cp>>18))) $((0x80 | ((cp>>12)&0x3F))) \
-      $((0x80 | ((cp>>6)&0x3F))) $((0x80 | (cp & 0x3F)))
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
+fi
+
+# --- UTF-8 encoder (emit codepoint as bytes; no \U in output) ---
+u8_cp() {
+  local cp="$1"
+  if   (( cp < 0x80 )); then
+    printf "\\$(printf '%03o' "$cp")"
+  elif (( cp < 0x800 )); then
+    printf "\\$(printf '%03o' $((0xC0 | (cp>>6))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
+  elif (( cp < 0x10000 )); then
+    printf "\\$(printf '%03o' $((0xE0 | (cp>>12))))\\$(printf '%03o' $((0x80 | ((cp>>6)&0x3F))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
+  else
+    printf "\\$(printf '%03o' $((0xF0 | (cp>>18))))\\$(printf '%03o' $((0x80 | ((cp>>12)&0x3F))))\\$(printf '%03o' $((0x80 | ((cp>>6)&0x3F))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
   fi
 }
 
-# mask bits: TL(5) TR(4) ML(3) MR(2) BL(1) BR(0)
-sextant_cp_from_mask() { # $1=mask 0..63
-  local m=$1
-  (( m==0 )) && { printf ' '; return; }
-  # reverse 6 bits: TL→b0, TR→b1, ML→b2, MR→b3, BL→b4, BR→b5
-  local r=0
-  (( r |= ((m>>5)&1) << 0 ))   # TL
-  (( r |= ((m>>4)&1) << 1 ))   # TR
-  (( r |= ((m>>3)&1) << 2 ))   # ML
-  (( r |= ((m>>2)&1) << 3 ))   # MR
-  (( r |= ((m>>1)&1) << 4 ))   # BL
-  (( r |= ((m>>0)&1) << 5 ))   # BR
-  # 1→U+1CE51 … 63→U+1CE8F ; 0→space
-  local cp=$((0x1CE50 + r))
-  printf '%b' "$(cp_utf8 "$cp")"
+# Visual bit order we build: TL TR | ML MR | BL BR  (each 0/1)
+# Mapping expects reversed (BR..TL). 0 => space; 1..63 => U+1CE51+(v-1)
+emit_sextant() {
+  local tl="$1" tr="$2" ml="$3" mr="$4" bl="$5" br="$6"
+  local v=$(( (br<<5) | (bl<<4) | (mr<<3) | (ml<<2) | (tr<<1) | tl ))
+  if (( v == 0 )); then
+    printf ' '
+  else
+    u8_cp $((0x1CE51 + v - 1))
+  fi
 }
 
-
-# Progress units per row (0..59). Each column i shows two units.
-units_for_col(){ # $1=prog(0..59) $2=col(0..29)
-  local u=$(( $1 - 2*$2 ))
-  (( u<0 )) && u=0
-  (( u>2 )) && u=2
-  printf '%d' "$u"
+row_fill() {
+  local k="${1:-0}" i out=""
+  (( k<0 )) && k=0
+  (( k>60 )) && k=60
+  for ((i=0;i<60;i++)); do
+    if (( i < k )); then out+='1'; else out+='0'; fi
+  done
+  printf '%s' "$out"
 }
 
-# Compose a cell from three row-unit counts (0/1/2 each)
-make_cell(){ # $1=col $2=s_prog $3=m_prog $4=h_prog
-  local i=$1 su mu hu mask=0
-  su=$(units_for_col "$2" "$i")
-  mu=$(units_for_col "$3" "$i")
-  hu=$(units_for_col "$4" "$i")
-  # top row → bits TL(5)/TR(4)
-  (( su>=1 )) && (( mask |= 1<<5 ))
-  (( su==2 )) && (( mask |= 1<<4 ))
-  # mid row → bits ML(3)/MR(2)
-  (( mu>=1 )) && (( mask |= 1<<3 ))
-  (( mu==2 )) && (( mask |= 1<<2 ))
-  # bot row → bits BL(1)/BR(0)
-  (( hu>=1 )) && (( mask |= 1<<1 ))
-  (( hu==2 )) && (( mask |= 1<<0 ))
-
-  sextant_cp_from_mask "$mask"
+# ensure length is exactly 60 (pad/trunc)
+row_fix60() {
+  local s="$1" n
+  n=${#s}
+  if (( n < 60 )); then
+    printf '%s%*s' "$s" $((60-n)) "" | tr ' ' '0'
+  else
+    printf '%s' "${s:0:60}"
+  fi
 }
 
-# --- time to progress ---
-read -r H M S < <(date '+%H %M %S')
-h=$((10#$H)); m=$((10#$M)); s=$((10#$S))
-secs_prog=$s
-mins_prog=$m
-mins_in_12=$(( (h%12)*60 + m ))
-hours_prog=$(( mins_in_12 / 12 ))   # 0..59 (12 min per tick)
+# --- time ---
+read -r HH MM SS < <(date '+%H %M %S')
+H=$((10#$HH)); M=$((10#$MM)); S=$((10#$SS))
 
-# --- render with separators ---
-out='│'
+row_top="$(row_fill "$S")"
+row_mid="$(row_fill "$M")"
+
+# hours row by mode
+case "$mode" in
+  0)  # smooth across 12h → 60 ticks
+      # minute within current 12h block, then scale to 0..59
+      mins_since=$(( (H % 12) * 60 + M ))   # 0..719
+      # scale 0..719 to 0..59 using integer math: floor(mins_since * 60 / 720)
+      hrs_count=$(( (mins_since * 60) / 720 ))
+      row_bot="$(row_fill "$hrs_count")"
+      ;;
+  1)  # discrete 11111 per passed hour
+      row_bot="$(row_fill $(((H % 12)*5)))"
+      ;;
+  2)  # discrete 01110 per passed hour (easier to count)
+      keep=$(((H % 12)*5))
+      # build 60-char base pattern
+      pat=""; for ((i=0;i<12;i++)); do pat+='01110'; done
+      outp=""
+      for ((i=0;i<60;i++)); do
+        if (( i < keep )); then outp+="${pat:i:1}"; else outp+='0'; fi
+      done
+      row_bot="$outp"
+      ;;
+esac
+
+row_top="$(row_fix60 "$row_top")"
+row_mid="$(row_fix60 "$row_mid")"
+row_bot="$(row_fix60 "$row_bot")"
+
+# --- pack 30 sextants, add dividers every 10 dots (5 sextants); center uses full '│' ---
+txt=""
 for ((i=0;i<30;i++)); do
-  out+=$(make_cell "$i" "$secs_prog" "$mins_prog" "$hours_prog")
-  case "$i" in
-    4|9|19|24) out+='╵' ;;
-    14)        out+='│' ;;
-  esac
+  tl=${row_top:$((2*i+0)):1}; tr=${row_top:$((2*i+1)):1}
+  ml=${row_mid:$((2*i+0)):1}; mr=${row_mid:$((2*i+1)):1}
+  bl=${row_bot:$((2*i+0)):1}; br=${row_bot:$((2*i+1)):1}
+  txt+=$(emit_sextant "$tl" "$tr" "$ml" "$mr" "$bl" "$br")
+  j=$((i+1))
+  if (( j % 5 == 0 && j < 30 )); then
+    if (( j == 15 )); then txt+='│'; else txt+='╵'; fi
+  fi
 done
-out+='│'
 
-printf '{"text":"%s","class":"mid--010-sextants"}\n' "$out"
+printf '{"text":"|%s|","class":"mid--010-sextants m%s"}\n' "$txt" "$mode"

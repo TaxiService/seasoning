@@ -47,8 +47,8 @@ sup_str() {
 txt=""
 case "$mode" in
   0) txt="${H}$(blink ":" ".")${M}" ;;
-  1) txt="${H}$(blink " " "·")${M}" ;;
-  2) txt="${H}:${M}:${S}" ;;
+  1) txt="${H}:${M}:${S}" ;;
+  2) txt="${H}$(blink " " "·")${M}" ;;
   3) txt="${H}·${M}·${S}" ;;
   4) txt="${H}:${M} $(sup_str "$S")" ;;
   *) txt="${H}!${M}" ;;
