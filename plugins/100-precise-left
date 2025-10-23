@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Side: precise LEFT — modes:
+# 0) Tue 29 October
+# 1) Tuesday 29 October
+# 2) 29 October
+set -euo pipefail
+LC_TIME=C
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+ID="$(basename "$0")"                       # 100-precise-left
+MODE_FILE="$CACHE/mode.$ID.state"
+mkdir -p "$CACHE"
+
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 3 ))
+fi
+
+# one date(1) call for efficiency
+IFS=, read -r aA A B d < <(date +%a,%A,%B,%d)
+
+case "$mode" in
+  0) printf "%s %s %s\n" "$aA" "$d" "$B" ;;
+  1) printf "%s %s %s\n"   "$A"  "$d" "$B" ;;
+  2) printf "%s %s\n"           "$d" "$B" ;;
+esac

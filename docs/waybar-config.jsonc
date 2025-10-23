@@ -1,0 +1,44 @@
+  "modules-center": [
+    "custom/seasoning-left", 
+    "custom/sep",
+    "custom/update",
+    "custom/seasoning-mid",
+    "custom/screenrecording-indicator",
+    "custom/sep",
+    "custom/seasoning-right"
+  ],
+  "custom/sep": { "format": " │ ", "tooltip": false },
+  "custom/seasoning-left": {
+    "exec": "/usr/bin/seasoning run side left",
+    "return-type": "string",
+    "interval": 1,
+    "signal": 5,
+    "min-length": 25,
+    "align": 1.0,
+    "on-click": "/usr/bin/seasoning ctl sides cycle --output \"$WAYBAR_OUTPUT_NAME\"; pkill -x -RTMIN+5 waybar",
+    "on-click-right": "bash -lc 'OUT=${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}; /usr/bin/seasoning ctl sides mode-next --which left --output \"$OUT\"; pkill -x -RTMIN+5 waybar'",
+    "on-click-middle": "bash -lc 'OUT=${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}; /usr/bin/seasoning ctl sides mode-sync --which left --output \"$OUT\"; pkill -x -RTMIN+5 waybar'",
+    "tooltip": false
+  },
+  "custom/seasoning-mid": {
+    "exec": "/usr/bin/seasoning run mid",
+    "return-type": "json",
+    "interval": 1,
+    "signal": 6,
+    "on-click": "/usr/bin/seasoning ctl mid cycle --output \"$WAYBAR_OUTPUT_NAME\"",
+    "on-click-right": "bash -lc 'OUT=${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}; /usr/bin/seasoning ctl mid mode-next --output \"$OUT\"; pkill -x -RTMIN+6 waybar'",
+    "on-click-middle": "omarchy-launch-floating-terminal-with-presentation omarchy-tz-select",
+    "tooltip": false
+  },
+  "custom/seasoning-right": {
+    "exec": "/usr/bin/seasoning run side right",
+    "return-type": "string",
+    "interval": 1,
+    "signal": 5,
+    "min-length": 25,
+    "align": 0.0,
+    "on-click": "/usr/bin/seasoning ctl sides cycle --output \"$WAYBAR_OUTPUT_NAME\"; pkill -x -RTMIN+5 waybar",
+    "on-click-right": "bash -lc 'OUT=${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}; /usr/bin/seasoning ctl sides mode-next --which right --output \"$OUT\"; pkill -x -RTMIN+5 waybar'",
+    "on-click-middle": "bash -lc 'OUT=${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output)}; /usr/bin/seasoning ctl sides mode-sync --which right --output \"$OUT\"; pkill -x -RTMIN+5 waybar'",
+    "tooltip": false
+  }

@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# mid: Sextants clock — rows = seconds (top), minutes (mid), hours (bottom)
+# modes:
+#   0 = smooth hours (0..59 dots across 12h)
+#   1 = discrete hours, each passed hour = "11111"
+#   2 = discrete hours, each passed hour = "01110"
+set -euo pipefail
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+MODE_FILE="$CACHE/mode.010-sextants.state"
+mkdir -p "$CACHE"
+
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 4 ))
+fi
+
+# --- UTF-8 encoder (emit codepoint as bytes; no \U in output) ---
+u8_cp() {
+  local cp="$1"
+  if   (( cp < 0x80 )); then
+    printf "\\$(printf '%03o' "$cp")"
+  elif (( cp < 0x800 )); then
+    printf "\\$(printf '%03o' $((0xC0 | (cp>>6))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
+  elif (( cp < 0x10000 )); then
+    printf "\\$(printf '%03o' $((0xE0 | (cp>>12))))\\$(printf '%03o' $((0x80 | ((cp>>6)&0x3F))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
+  else
+    printf "\\$(printf '%03o' $((0xF0 | (cp>>18))))\\$(printf '%03o' $((0x80 | ((cp>>12)&0x3F))))\\$(printf '%03o' $((0x80 | ((cp>>6)&0x3F))))\\$(printf '%03o' $((0x80 | (cp&0x3F))))"
+  fi
+}
+
+# Visual bit order we build: TL TR | ML MR | BL BR  (each 0/1)
+# Mapping expects reversed (BR..TL). 0 => space; 1..63 => U+1CE51+(v-1)
+emit_sextant() {
+  local tl="$1" tr="$2" ml="$3" mr="$4" bl="$5" br="$6"
+  local v=$(( (br<<5) | (bl<<4) | (mr<<3) | (ml<<2) | (tr<<1) | tl ))
+  if (( v == 0 )); then
+    printf ' '
+  else
+    u8_cp $((0x1CE51 + v - 1))
+  fi
+}
+
+row_fill() {
+  local k="${1:-0}" i out=""
+  (( k<0 )) && k=0
+  (( k>60 )) && k=60
+  for ((i=0;i<60;i++)); do
+    if (( i < k )); then out+='1'; else out+='0'; fi
+  done
+  printf '%s' "$out"
+}
+
+row_single_dot() {
+  local p="$1" i out=""
+  (( p<0 )) && p=0
+  (( p>59 )) && p=59
+  for ((i=0;i<60;i++)); do
+    if (( i == p )); then out+='1'; else out+='0'; fi
+  done
+  printf '%s' "$out"
+}
+
+# --- time ---
+read -r HH MM SS < <(date '+%H %M %S')
+H=$((10#$HH)); M=$((10#$MM)); S=$((10#$SS))
+
+case "$mode" in
+  3)
+    if (( S == 0 )); then si=59; else si=$((S-1)); fi
+    row_top="$(row_single_dot "$si")"
+    ;;
+  *) row_top="$(row_fill "$S")"
+    ;;
+esac
+
+row_mid="$(row_fill "$M")"
+
+# hours row by mode
+case "$mode" in
+  0|3)  # smooth across 12h → 60 ticks
+      mins_since=$(( (H % 12) * 60 + M )) # 0..719
+      hrs_count=$(( mins_since / 12 ))    # 0..59
+      row_bot="$(row_fill "$hrs_count")"
+      ;;
+  1)  # discrete 11111 per passed hour
+      row_bot="$(row_fill $(((H % 12)*5)))" # 0,5,...,55
+      ;;
+  2)  # discrete 01110 per passed hour (easier to count)
+      keep=$(((H % 12)*5))
+      # build 60-char base pattern
+      pat=""; for ((i=0;i<12;i++)); do pat+='01110'; done
+      outp=""
+      for ((i=0;i<60;i++)); do
+        if (( i < keep )); then outp+="${pat:i:1}"; else outp+='0'; fi
+      done
+      row_bot="$outp"
+      ;;
+esac
+
+# --- pack 30 sextants, add dividers every 10 dots (5 sextants); center uses full '│' ---
+txt=""
+for ((i=0;i<30;i++)); do
+  tl=${row_top:$((2*i+0)):1}; tr=${row_top:$((2*i+1)):1}
+  ml=${row_mid:$((2*i+0)):1}; mr=${row_mid:$((2*i+1)):1}
+  bl=${row_bot:$((2*i+0)):1}; br=${row_bot:$((2*i+1)):1}
+  txt+=$(emit_sextant "$tl" "$tr" "$ml" "$mr" "$bl" "$br")
+  j=$((i+1))
+  if (( j % 5 == 0 && j < 30 )); then
+    if (( j == 15 )); then txt+='│'; else txt+='╵'; fi
+  fi
+done
+
+printf '{"text":"|%s|","class":"mid--010-sextants m%s"}\n' "$txt" "$mode"
