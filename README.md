@@ -1,2 +1,2 @@
 # seasoning
-\<need a description here\>
+\<need a string entry here\>
