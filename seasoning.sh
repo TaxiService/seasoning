@@ -114,15 +114,6 @@ ctl_mid(){
       local base="${arr[$cur]##*/}" mf; mf="$(_state_path "$out" "mode.$base")"
       _write_int "$mf" $(( $(_read_int "$mf") + 1 ))
       send_signal 6 ;;
-    mode-sync)
-      f="$(_state_path "$out" mid)"; cur="$(_read_int "$f")"; (( cur = cur % ${#arr[@]} ))
-      base="${arr[$cur]##*/}"
-      src="$(_state_path "$out" "mode.$base")"
-      val="$(_read_int "$src")"
-      while IFS= read -r o; do
-        _write_int "$(_state_path "$o" "mode.$base")" "$val"
-      done < <(list_outputs)
-      send_signal 6 ;;
     *) usage ;;
   esac
 }
@@ -164,20 +155,6 @@ ctl_sides(){
   esac
 }
 
-doctor(){
-  echo "== seasoning doctor =="
-  echo "plugins dir: $SEAS_PLUGINS"
-  echo "cache dir  : $SEAS_CACHE"
-  echo "-- mids --"
-  _list_mid | sed 's/^/  · /'
-  echo "-- pairs --"
-  _list_pair_prefixes | sed 's/^/  · /'
-  local out; out="$(which-output)"
-  echo "active output: $out"
-  echo "mid.state : $(_read_int "$(_state_path "$out" mid)")"
-  echo "pairs.state: $(_read_int "$(_state_path "$out" pairs)")"
-}
-
 # ---------- main ----------
 case "${1:-}" in
   run)
@@ -195,6 +172,5 @@ case "${1:-}" in
     esac
     ;;
   which-output) which-output ;;
-  doctor) doctor ;;
   *) usage ;;
 esac

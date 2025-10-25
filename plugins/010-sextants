@@ -1,10 +1,40 @@
 #!/usr/bin/env bash
-# mid: Sextants clock — rows = seconds (top), minutes (mid), hours (bottom)
-# modes:
-#   0 = smooth hours (0..59 dots across 12h)
-#   1 = discrete hours, each passed hour = "11111"
-#   2 = discrete hours, each passed hour = "01110"
+# mid: Sextants clock — 60x3 dot display using sextant characters
+# Three rows representing: seconds (top), minutes (mid), hours (bottom)
 set -euo pipefail
+
+# ============================================================================
+# CUSTOMIZATION SECTION - Edit these to change appearance
+# ============================================================================
+
+# Display offset: 0 = starts at position 1, 30 = starts at position 31 (centered)
+DISPLAY_OFFSET=0
+
+# End caps: Characters to display at the start and end of the clock
+CAP_LEFT='〈'
+CAP_RIGHT='〉'
+
+# Separator configuration
+SEP_INTERVAL=10          # Place separator every N dots (10 = every 5 chars)
+SEP_NORMAL='╵'           # Regular separator character
+SEP_CENTER='│'           # Center separator (at position 30)
+
+# Hour rendering for discrete mode
+# Pattern repeats to fill 60 dots. Pattern length × repetitions must equal 60
+HOUR_DISCRETE_PATTERN='1111001111'    # Pattern for each passed hour
+HOUR_DISCRETE_REPS=6            # Number of times pattern repeats (12 × 5 = 60)
+
+# ============================================================================
+# MODE DEFINITIONS
+# ============================================================================
+# Mode 0: Smooth fill for all (H, M, S all show as progress bars)
+# Mode 1: Smooth M & S, discrete H (hours show as distinct blocks)
+# Mode 2: Pointer S, smooth M & H (second shows as single moving dot)
+# Mode 3: Pointer for all (all three show as single moving dots)
+
+# ============================================================================
+# INTERNAL LOGIC - Advanced users only
+# ============================================================================
 
 OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
 CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
@@ -17,7 +47,7 @@ if [[ -r "$MODE_FILE" ]]; then
   [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 4 ))
 fi
 
-# --- UTF-8 encoder (emit codepoint as bytes; no \U in output) ---
+# --- UTF-8 encoder (emit codepoint as bytes) ---
 u8_cp() {
   local cp="$1"
   if   (( cp < 0x80 )); then
@@ -31,7 +61,7 @@ u8_cp() {
   fi
 }
 
-# Visual bit order we build: TL TR | ML MR | BL BR  (each 0/1)
+# Visual bit order: TL TR | ML MR | BL BR
 # Mapping expects reversed (BR..TL). 0 => space; 1..63 => U+1CE51+(v-1)
 emit_sextant() {
   local tl="$1" tr="$2" ml="$3" mr="$4" bl="$5" br="$6"
@@ -43,74 +73,165 @@ emit_sextant() {
   fi
 }
 
-row_fill() {
+# --- Rendering functions ---
+
+# render_fill: Creates a 60-char string with 'k' dots filled from start
+render_fill() {
   local k="${1:-0}" i out=""
-  (( k<0 )) && k=0
-  (( k>60 )) && k=60
-  for ((i=0;i<60;i++)); do
+  (( k < 0 )) && k=0
+  (( k > 60 )) && k=60
+  for ((i=0; i<60; i++)); do
     if (( i < k )); then out+='1'; else out+='0'; fi
   done
   printf '%s' "$out"
 }
 
-row_single_dot() {
+# render_pointer: Creates a 60-char string with single dot at position 'p'
+render_pointer() {
   local p="$1" i out=""
-  (( p<0 )) && p=0
-  (( p>59 )) && p=59
-  for ((i=0;i<60;i++)); do
+  (( p < 0 )) && p=0
+  (( p > 59 )) && p=59
+  for ((i=0; i<60; i++)); do
     if (( i == p )); then out+='1'; else out+='0'; fi
   done
   printf '%s' "$out"
 }
 
-# --- time ---
+# render_discrete: Creates pattern for passed hours (0-11)
+render_discrete() {
+  local hours="$1"  # 0-11
+  local pattern="$HOUR_DISCRETE_PATTERN"
+  local reps="$HOUR_DISCRETE_REPS"
+  local pattern_len=${#pattern}
+  local total_len=$((pattern_len * reps))
+  
+  # Validate that pattern × reps = 60
+  if (( total_len != 60 )); then
+    # Fallback: just use what we can
+    reps=$((60 / pattern_len))
+    (( reps < 1 )) && reps=1
+  fi
+  # Map 12 hours onto 'reps' patterns
+  local patterns_per_hour_x10=$((reps * 10 / 12))  # Fixed point math
+  local patterns_to_show=$(( (hours * patterns_per_hour_x10) / 10 ))
+  local keep=$((patterns_to_show * pattern_len))
+  
+  # Build 60-char base pattern
+  local pat="" i
+  for ((i=0; i<reps; i++)); do pat+="$pattern"; done
+  
+  # Pad or trim to exactly 60 if needed
+  while (( ${#pat} < 60 )); do pat+='0'; done
+  pat="${pat:0:60}"
+  
+  # Keep only the 'passed' portion
+  local out=""
+  for ((i=0; i<60; i++)); do
+    if (( i < keep )); then out+="${pat:i:1}"; else out+='0'; fi
+  done
+  printf '%s' "$out"
+}
+
+# apply_offset: Rotates a 60-char string by offset amount
+apply_offset() {
+  local str="$1"
+  local offset="$DISPLAY_OFFSET"
+  (( offset = offset % 60 ))
+  if (( offset == 0 )); then
+    printf '%s' "$str"
+  else
+    printf '%s' "${str:offset}${str:0:offset}"
+  fi
+}
+
+# --- Get current time ---
 read -r HH MM SS < <(date '+%H %M %S')
 H=$((10#$HH)); M=$((10#$MM)); S=$((10#$SS))
+H12=$(( H % 12 ))  # 0-11
 
+# --- Render rows based on mode ---
 case "$mode" in
-  3)
-    if (( S == 0 )); then si=59; else si=$((S-1)); fi
-    row_top="$(row_single_dot "$si")"
+  0)  # Smooth fill for all
+    row_top=$(render_fill "$S")
+    row_mid=$(render_fill "$M")
+    # Hours smooth across 12h → 60 ticks
+    mins_since=$(( H12 * 60 + M ))
+    hrs_count=$(( mins_since / 12 ))
+    row_bot=$(render_fill "$hrs_count")
     ;;
-  *) row_top="$(row_fill "$S")"
+  
+  1)  # Smooth M & S, discrete H
+    row_top=$(render_fill "$S")
+    row_mid=$(render_fill "$M")
+    row_bot=$(render_discrete "$H12")
+    ;;
+  
+  2)  # Pointer S, smooth M & H
+    # Show second pointer at previous position when S=0 (mimics smooth transition)
+    if (( S == 0 )); then
+      row_top=$(render_pointer 59)
+    else
+      row_top=$(render_pointer $((S - 1)))
+    fi
+    row_mid=$(render_fill "$M")
+    # Hours smooth
+    mins_since=$(( H12 * 60 + M ))
+    hrs_count=$(( mins_since / 12 ))
+    row_bot=$(render_discrete "$H12")
+    ;;
+  
+  3)  # Pointer for all
+    # Seconds pointer
+    if (( S == 0 )); then
+      row_top=$(render_pointer 59)
+    else
+      row_top=$(render_pointer $((S - 1)))
+    fi
+    # Minutes pointer
+    if (( M == 0 )); then
+      row_mid=$(render_pointer 59)
+    else
+      row_mid=$(render_pointer $((M - 1)))
+    fi
+    # Hours pointer (map 0-11 hours to 0-59 positions, smooth within hour)
+    mins_since=$(( H12 * 60 + M ))
+    hrs_pos=$(( mins_since / 12 ))
+    if (( hrs_pos == 0 )); then
+      row_bot=$(render_pointer 59)
+    else
+      row_bot=$(render_pointer $((hrs_pos - 1)))
+    fi
     ;;
 esac
 
-row_mid="$(row_fill "$M")"
+# Apply offset rotation if configured
+row_top=$(apply_offset "$row_top")
+row_mid=$(apply_offset "$row_mid")
+row_bot=$(apply_offset "$row_bot")
 
-# hours row by mode
-case "$mode" in
-  0|3)  # smooth across 12h → 60 ticks
-      mins_since=$(( (H % 12) * 60 + M )) # 0..719
-      hrs_count=$(( mins_since / 12 ))    # 0..59
-      row_bot="$(row_fill "$hrs_count")"
-      ;;
-  1)  # discrete 11111 per passed hour
-      row_bot="$(row_fill $(((H % 12)*5)))" # 0,5,...,55
-      ;;
-  2)  # discrete 01110 per passed hour (easier to count)
-      keep=$(((H % 12)*5))
-      # build 60-char base pattern
-      pat=""; for ((i=0;i<12;i++)); do pat+='01110'; done
-      outp=""
-      for ((i=0;i<60;i++)); do
-        if (( i < keep )); then outp+="${pat:i:1}"; else outp+='0'; fi
-      done
-      row_bot="$outp"
-      ;;
-esac
-
-# --- pack 30 sextants, add dividers every 10 dots (5 sextants); center uses full '│' ---
+# --- Pack into 30 sextants with separators ---
 txt=""
-for ((i=0;i<30;i++)); do
-  tl=${row_top:$((2*i+0)):1}; tr=${row_top:$((2*i+1)):1}
-  ml=${row_mid:$((2*i+0)):1}; mr=${row_mid:$((2*i+1)):1}
-  bl=${row_bot:$((2*i+0)):1}; br=${row_bot:$((2*i+1)):1}
+for ((i=0; i<30; i++)); do
+  tl=${row_top:$((2*i+0)):1}
+  tr=${row_top:$((2*i+1)):1}
+  ml=${row_mid:$((2*i+0)):1}
+  mr=${row_mid:$((2*i+1)):1}
+  bl=${row_bot:$((2*i+0)):1}
+  br=${row_bot:$((2*i+1)):1}
+  
   txt+=$(emit_sextant "$tl" "$tr" "$ml" "$mr" "$bl" "$br")
-  j=$((i+1))
-  if (( j % 5 == 0 && j < 30 )); then
-    if (( j == 15 )); then txt+='│'; else txt+='╵'; fi
+  
+  # Add separators
+  j=$((i + 1))
+  dot_pos=$((j * 2))  # Position in terms of dots (0-60)
+  
+  if (( j < 30 && dot_pos % SEP_INTERVAL == 0 )); then
+    if (( dot_pos == 30 )); then
+      txt+="$SEP_CENTER"
+    else
+      txt+="$SEP_NORMAL"
+    fi
   fi
 done
 
-printf '{"text":"|%s|","class":"mid--010-sextants m%s"}\n' "$txt" "$mode"
+printf '{"text":"%s%s%s","class":"mid--010-sextants m%s"}\n' "$CAP_LEFT" "$txt" "$CAP_RIGHT" "$mode"
