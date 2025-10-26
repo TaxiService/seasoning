@@ -1,32 +1,26 @@
 #!/usr/bin/env bash
 # mid: HMS clock with blinking separators (robust)
 set -euo pipefail
-
 # capture any runtime errors so you can inspect them
 OUT_LOG="${HOME}/.cache/seasoning/000-hms.err"
 mkdir -p "$(dirname "$OUT_LOG")"
 exec 2>"$OUT_LOG"
-
 # --- per-output mode state ---
 OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
 CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
 MODE_FILE="$CACHE/mode.000-hms.state"
 mkdir -p "$CACHE"
-
 mode=0
 if [[ -r "$MODE_FILE" ]]; then
   read -r m <"$MODE_FILE" || true
-  [[ "${m:-}" =~ ^[0-9]+$ ]] && mode=$(( m % 5 ))
+  [[ "${m:-}" =~ ^[0-9]+$ ]] && mode=$(( m % 6 ))
 fi
-
 # --- time fields (avoid process substitution to be extra safe) ---
 H="$(date +%H)"; M="$(date +%M)"; S="$(date +%S)"
 sec=$((10#$S))
-
 blink(){ # $1=even-glyph $2=odd-glyph
   if (( sec & 1 )); then printf '%s' "${2:- }"; else printf '%s' "${1:-:}"; fi
 }
-
 sup_digit() {
   case "$1" in
     0) printf '⁰';; 1) printf '¹';; 2) printf '²';; 3) printf '³';;
@@ -43,7 +37,22 @@ sup_str() {
   done
   printf '%s' "$out"
 }
-
+sub_digit() {
+  case "$1" in
+    0) printf '₀';; 1) printf '₁';; 2) printf '₂';; 3) printf '₃';;
+    4) printf '₄';; 5) printf '₅';; 6) printf '₆';; 7) printf '₇';;
+    8) printf '₈';; 9) printf '₉';;
+    *) printf '%s' "$1";;
+  esac
+}
+sub_str() {
+  local s="$1" i ch out=""
+  for ((i=0;i<${#s};i++)); do
+    ch="${s:i:1}"
+    out+="$(sub_digit "$ch")"
+  done
+  printf '%s' "$out"
+}
 txt=""
 case "$mode" in
   0) txt="${H}$(blink ":" ".")${M}" ;;
@@ -51,7 +60,7 @@ case "$mode" in
   2) txt="${H}$(blink " " "·")${M}" ;;
   3) txt="${H}·${M}·${S}" ;;
   4) txt="${H}:${M} $(sup_str "$S")" ;;
+  5) txt="${H}:${M} $(sub_str "$S")" ;;
   *) txt="${H}!${M}" ;;
 esac
-
 printf '{"text":"%s","class":"mid--000-hms"}\n' "$txt"

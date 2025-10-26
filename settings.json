@@ -1,0 +1,21 @@
+{
+  "mid": {
+    "plugins": ["000-hms", "010-sextants"],
+    "update_rates": {
+      "000-hms": "second",
+      "010-sextants": "second"
+    }
+  },
+  "sides": {
+    "pairs": [
+      ["110-descriptive-left", "110-descriptive-right"],
+      ["100-precise-left", "100-precise-right"]
+    ],
+    "update_rates": {
+      "110-descriptive-left": "hour",
+      "110-descriptive-right": "day",
+      "100-precise-left": "day",
+      "100-precise-right": "hour"
+    }
+  }
+}
