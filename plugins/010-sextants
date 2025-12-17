@@ -11,8 +11,8 @@ set -euo pipefail
 DISPLAY_OFFSET=0
 
 # End caps: Characters to display at the start and end of the clock
-CAP_LEFT='〈'
-CAP_RIGHT='〉'
+CAP_LEFT='〈'
+CAP_RIGHT='〉'
 
 # Separator configuration
 SEP_INTERVAL=10          # Place separator every N dots (10 = every 5 chars)
@@ -111,10 +111,11 @@ render_discrete() {
     reps=$((60 / pattern_len))
     (( reps < 1 )) && reps=1
   fi
-  # Map 12 hours onto 'reps' patterns
-  local patterns_per_hour_x10=$((reps * 10 / 12))  # Fixed point math
-  local patterns_to_show=$(( (hours * patterns_per_hour_x10) / 10 ))
-  local keep=$((patterns_to_show * pattern_len))
+  
+  # Calculate how many dots to show for passed time
+  # Map 12 hours smoothly onto 60 dots (5 dots per hour)
+  local mins_since=$(( H12 * 60 + M ))  # Total minutes since midnight in 12h
+  local keep=$(( mins_since / 12 ))     # Divide by 12 to get 0-60 range
   
   # Build 60-char base pattern
   local pat="" i

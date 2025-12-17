@@ -28,18 +28,18 @@ month="$(date +%B | tr '[:upper:]' '[:lower:]')"
 
 # season + phase (dec starts winter; phase = early/mid/late)
 case "$m" in
-  12) season=winter; phase=early ;;
-   1) season=winter; phase=mid   ;;
-   2) season=winter; phase=late  ;;
-   3) season=spring; phase=early ;;
-   4) season=spring; phase=mid   ;;
-   5) season=spring; phase=late  ;;
-   6) season=summer; phase=early ;;
-   7) season=summer; phase=mid   ;;
-   8) season=summer; phase=late  ;;
-   9) season=autumn; phase=early ;;
-  10) season=autumn; phase=mid   ;;
-  11) season=autumn; phase=late  ;;
+  12) season=winter; phase='early ' ;;
+   1) season=winter; phase='mid-'   ;;
+   2) season=winter; phase='late '  ;;
+   3) season=spring; phase='early ' ;;
+   4) season=spring; phase='mid-'   ;;
+   5) season=spring; phase='late '  ;;
+   6) season=summer; phase='early ' ;;
+   7) season=summer; phase='mid-'   ;;
+   8) season=summer; phase='late '  ;;
+   9) season=autumn; phase='early ' ;;
+  10) season=autumn; phase='mid-'   ;;
+  11) season=autumn; phase='late '  ;;
 esac
 
 phase_season="${phase}${season}"            # e.g. midautumn

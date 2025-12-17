@@ -16,22 +16,34 @@ fi
 
 # --- helpers ---
 dow_short()  { date +%A | tr '[:upper:]' '[:lower:]'; }   # e.g. tuesday
-tod_bucket(){ h=$((10#$(date +%H))); case "$h" in 0|1|2|3|4|5) echo night;;
-                                               6|7|8|9|10|11) echo morning;;
-                                               12|13|14|15|16|17) echo afternoon;;
-                                               *) echo evening;; esac; }
-
+tod_bucket(){ 
+  h=$((10#$(date +%H))); 
+  case "$h" in 
+    0| 1| 2| 3| 4| 5) echo night;;
+    6| 7| 8| 9|10|11) echo morning;;
+   12|13|14|15|16|17) echo afternoon;;
+                   *) echo evening;; 
+  esac;
+}
 nth_weekday(){ d=$((10#$(date +%-d))); echo $(( (d-1)/7 + 1 )); }  # 1..5
-
 is_last_weekday_of_month(){
   m_now="$(date +%m)"
   m_next="$(date -d '+7 days' +%m)"
   [[ "$m_now" != "$m_next" ]]
 }
-
-ordinal_numeric(){ n=$1; case $((n%100)) in 11|12|13) s="th";;
-                                *) case $((n%10)) in 1)s="st";;2)s="nd";;3)s="rd";;*)s="th";; esac;; esac
-                   printf "%d%s" "$n" "$s"; }
+ordinal_numeric(){
+  n=$1;
+  case $((n%100)) in
+    11|12|13) s="th";;
+    *) case $((n%10)) in
+      1)s="st";;
+      2)s="nd";;
+      3)s="rd";;
+      *)s="th";;
+    esac ;;
+  esac
+  printf "%d%s" "$n" "$s"; 
+}
 
 ordinal_word_nth(){
   if is_last_weekday_of_month; then
@@ -48,7 +60,6 @@ ordinal_word_nth(){
   fi
 }
 
-# leap-day bang (only on Feb 29)
 BANG=''
 case "$(date +%m-%d)" in 02-29) BANG='!';; esac
 
