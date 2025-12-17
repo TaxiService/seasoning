@@ -1,4 +1,5 @@
 {
+  "_comment": "Update rates can be: 'second', 'minute', 'hour', 'day', or an array of rates per mode",
   "mid": {
     "plugins": ["000-hms", "010-sextants"],
     "update_rates": {
@@ -15,7 +16,7 @@
       "110-descriptive-left": "hour",
       "110-descriptive-right": "day",
       "100-precise-left": "day",
-      "100-precise-right": "hour"
+      "100-precise-right": ["hour", "hour", "hour", "hour", "day"]
     }
   }
 }

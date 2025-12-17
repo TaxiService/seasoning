@@ -21,10 +21,10 @@ if [[ -r "$MODE_FILE" ]]; then
   [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 4 ))
 fi
 
-y=$(date +%Y)
-dfy=$(( 10#$y + 10000 ))                    # “dfyear” → 12025 when Y=2025
-m=$(date +%-m)
-month="$(date +%B | tr '[:upper:]' '[:lower:]')"
+# Get all date info in single call for performance
+read -r y m month_full < <(date '+%Y %-m %B')
+dfy=$(( 10#$y + 10000 ))                    # "dfyear" → 12025 when Y=2025
+month="$(echo "$month_full" | tr '[:upper:]' '[:lower:]')"
 
 # season + phase (dec starts winter; phase = early/mid/late)
 case "$m" in

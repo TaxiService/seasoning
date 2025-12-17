@@ -14,21 +14,24 @@ if [[ -r "$MODE_FILE" ]]; then
   [[ "$m" =~ ^[0-9]+$ ]] && mode=$((m%3))
 fi
 
-# --- helpers ---
-dow_short()  { date +%A | tr '[:upper:]' '[:lower:]'; }   # e.g. tuesday
-tod_bucket(){ 
-  h=$((10#$(date +%H))); 
-  case "$h" in 
+# --- fetch all date info in minimal calls for performance ---
+read -r dow_full h d m_now md < <(date '+%A %H %-d %m %m-%d')
+dow="${dow_full,,}"  # lowercase using bash parameter expansion
+m_next="$(date -d '+7 days' '+%m')"
+
+# --- helpers (using pre-fetched values) ---
+tod_bucket(){
+  local h="$1"
+  case "$h" in
     0| 1| 2| 3| 4| 5) echo night;;
     6| 7| 8| 9|10|11) echo morning;;
    12|13|14|15|16|17) echo afternoon;;
-                   *) echo evening;; 
+                   *) echo evening;;
   esac;
 }
-nth_weekday(){ d=$((10#$(date +%-d))); echo $(( (d-1)/7 + 1 )); }  # 1..5
+nth_weekday(){ local d="$1"; echo $(( (d-1)/7 + 1 )); }  # 1..5
 is_last_weekday_of_month(){
-  m_now="$(date +%m)"
-  m_next="$(date -d '+7 days' +%m)"
+  local m_now="$1" m_next="$2"
   [[ "$m_now" != "$m_next" ]]
 }
 ordinal_numeric(){
@@ -46,30 +49,30 @@ ordinal_numeric(){
 }
 
 ordinal_word_nth(){
-  if is_last_weekday_of_month; then
+  local n="$1" m_now="$2" m_next="$3"
+  if is_last_weekday_of_month "$m_now" "$m_next"; then
     printf "last"
   else
-    case "$1" in
+    case "$n" in
       1) printf "first";;
       2) printf "second";;
       3) printf "third";;
       4) printf "fourth";;
       5) printf "fifth";;
-      *) printf "%s" "$(ordinal_numeric "$1")";;
+      *) printf "%s" "$(ordinal_numeric "$n")";;
     esac
   fi
 }
 
 BANG=''
-case "$(date +%m-%d)" in 02-29) BANG='!';; esac
+case "$md" in 02-29) BANG='!';; esac
 
-# --- render ---
-dow="$(dow_short)"
-tod="$(tod_bucket)"
-nth="$(nth_weekday)"
+# --- render (using pre-fetched values) ---
+tod="$(tod_bucket "$h")"
+nth="$(nth_weekday "$d")"
 
 case "$mode" in
   0) printf "%s %s%s\n" "$dow" "$tod" "$BANG" ;;
   1) printf "%s %s %s%s\n" "$(ordinal_numeric "$nth")" "$dow" "$tod" "$BANG" ;;
-  2) printf "%s %s %s%s\n" "$(ordinal_word_nth "$nth")" "$dow" "$tod" "$BANG" ;;
+  2) printf "%s %s %s%s\n" "$(ordinal_word_nth "$nth" "$m_now" "$m_next")" "$dow" "$tod" "$BANG" ;;
 esac

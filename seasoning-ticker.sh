@@ -68,26 +68,55 @@ rate_to_boundary() {
   esac
 }
 
-# Read update rate from config for a plugin
+# Read update rate from config for a plugin (supports per-mode rates)
 get_update_rate() {
   local section="$1"  # "mid" or "sides"
   local plugin="$2"   # plugin name
-  
+  local output="$3"   # output name (for reading mode)
+
   if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "second"
     return
   fi
-  
-  # Try to extract from config.json using grep/sed (no jq dependency)
-  # Format: "plugin-name": "rate"
-  local rate
-  rate=$(grep -A 20 "\"$section\"" "$CONFIG_FILE" | \
-         grep -A 10 '"update_rates"' | \
-         grep "\"$plugin\"" | \
-         sed -n 's/.*"\([^"]*\)"[[:space:]]*$/\1/p' | \
-         head -1)
-  
-  echo "${rate:-second}"
+
+  # Extract the value for this plugin (could be string or array)
+  local value
+  value=$(grep -A 20 "\"$section\"" "$CONFIG_FILE" | \
+          grep -A 10 '"update_rates"' | \
+          grep "\"$plugin\"" | \
+          sed -n 's/.*:[[:space:]]*//p' | \
+          sed 's/,$//' | \
+          head -1)
+
+  # Check if it's an array (starts with [)
+  if [[ "$value" =~ ^\[.*\]$ ]]; then
+    # It's an array - extract rates and select by mode
+    local mode
+    mode=$(get_active_mode "$output" "$plugin")
+
+    # Extract array elements (strip brackets, split by comma)
+    local rates_str="${value:1:-1}"  # Remove [ and ]
+    # Parse array: "rate1", "rate2", "rate3"
+    local rates=()
+    while IFS= read -r line; do
+      # Extract quoted strings
+      local r
+      r=$(echo "$line" | sed -n 's/^[[:space:]]*"\([^"]*\)".*$/\1/p')
+      [[ -n "$r" ]] && rates+=("$r")
+    done < <(echo "$rates_str" | tr ',' '\n')
+
+    # Return rate for this mode, or first rate if mode out of bounds
+    if (( mode < ${#rates[@]} )); then
+      echo "${rates[$mode]}"
+    else
+      echo "${rates[0]:-second}"
+    fi
+  else
+    # It's a string - extract the rate
+    local rate
+    rate=$(echo "$value" | sed -n 's/^[[:space:]]*"\([^"]*\)".*$/\1/p')
+    echo "${rate:-second}"
+  fi
 }
 
 # Get active plugin for a position on a monitor
@@ -120,6 +149,23 @@ get_active_plugin() {
       fi
       ;;
   esac
+}
+
+# Get active mode for a plugin on a monitor
+get_active_mode() {
+  local output="$1"
+  local plugin="$2"
+
+  local mode_file="$SEAS_CACHE/$output/mode.$plugin.state"
+  if [[ ! -f "$mode_file" ]]; then
+    echo "0"
+    return
+  fi
+
+  local mode
+  mode=$(cat "$mode_file" 2>/dev/null || echo 0)
+  [[ "$mode" =~ ^[0-9]+$ ]] || mode=0
+  echo "$mode"
 }
 
 # List all monitors
@@ -165,23 +211,23 @@ while true; do
     # Check mid module
     mid_plugin=$(get_active_plugin "$output" "mid")
     if [[ -n "$mid_plugin" ]]; then
-      mid_rate=$(get_update_rate "mid" "$mid_plugin")
+      mid_rate=$(get_update_rate "mid" "$mid_plugin" "$output")
       if should_update "$mid_rate" "$boundaries"; then
         send_signal $SIGNAL_MID
       fi
     fi
-    
+
     # Check side modules (left and right use same pair)
     pair_prefix=$(get_active_plugin "$output" "pairs")
     if [[ -n "$pair_prefix" ]]; then
       # Check left
       left_plugin="${pair_prefix}-left"
-      left_rate=$(get_update_rate "sides" "$left_plugin")
-      
+      left_rate=$(get_update_rate "sides" "$left_plugin" "$output")
+
       # Check right
       right_plugin="${pair_prefix}-right"
-      right_rate=$(get_update_rate "sides" "$right_plugin")
-      
+      right_rate=$(get_update_rate "sides" "$right_plugin" "$output")
+
       # Send signals if needed (they might have different rates!)
       if should_update "$left_rate" "$boundaries"; then
         send_signal $SIGNAL_LEFT
