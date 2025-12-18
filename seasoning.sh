@@ -248,12 +248,14 @@ ctl_sides(){
       cur="$(_read_int "$f")"
       nxt="$(_cycle_idx "$cur" "${#pre[@]}" "$action")"
       _write_int "$f" "$nxt"
+      pkill -x -RTMIN+5 waybar 2>/dev/null || true
       ;;
     set)
       local v="${1:-0}"
       f="$(_state_path "$out" pairs)"
       (( v = v % ${#pre[@]} ))
       _write_int "$f" "$v"
+      pkill -x -RTMIN+5 waybar 2>/dev/null || true
       ;;
     mode-next)
       f="$(_state_path "$out" pairs)"
@@ -262,6 +264,7 @@ ctl_sides(){
       local base="${pre[$cur]}-$which" mf
       mf="$(_state_path "$out" "mode.$base")"
       _write_int "$mf" $(( $(_read_int "$mf") + 1 ))
+      pkill -x -RTMIN+5 waybar 2>/dev/null || true
       ;;
     mode-sync)
       # Sync current side plugin's mode across all monitors
@@ -274,9 +277,10 @@ ctl_sides(){
       while IFS= read -r o; do
         _write_int "$(_state_path "$o" "mode.$base")" "$val"
       done < <(list_outputs)
+      pkill -x -RTMIN+5 waybar 2>/dev/null || true
       ;;
-    *) 
-      usage 
+    *)
+      usage
       ;;
   esac
 }

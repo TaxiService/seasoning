@@ -21,8 +21,8 @@ SEP_CENTER='│'           # Center separator (at position 30)
 
 # Hour rendering for discrete mode
 # Pattern repeats to fill 60 dots. Pattern length × repetitions must equal 60
-HOUR_DISCRETE_PATTERN='1111001111'    # Pattern for each passed hour
-HOUR_DISCRETE_REPS=6            # Number of times pattern repeats (12 × 5 = 60)
+HOUR_DISCRETE_PATTERN='1111001111' # Pattern for each passed hour(s?)
+HOUR_DISCRETE_REPS=6      # Number of times pattern repeats (10×6 = 5×12)
 
 # ============================================================================
 # MODE DEFINITIONS
