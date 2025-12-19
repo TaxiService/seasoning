@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# mid: Rotating progress bars using CP437 characters
+# Cycles through H/M/S bars, showing one at a time
+# 4 modes: 2 character sets × 2 rotation speeds
+set -euo pipefail
+
+# --- CONFIGURATION ---
+# Group hours into blocks of 5 for easier reading (set to false to disable)
+GROUP_HOURS=true
+# ---------------------
+
+OUT="${WAYBAR_OUTPUT_NAME:-$(/usr/bin/seasoning which-output 2>/dev/null || echo default)}"
+CACHE="${SEASONING_CACHE:-$HOME/.cache/seasoning}/$OUT"
+MODE_FILE="$CACHE/mode.020-rotating-bars.state"
+mkdir -p "$CACHE"
+
+# Read mode (0..5)
+mode=0
+if [[ -r "$MODE_FILE" ]]; then
+  read -r m <"$MODE_FILE" || true
+  [[ "$m" =~ ^[0-9]+$ ]] && mode=$(( m % 6 ))
+fi
+
+# Get current time
+read -r H24 M S < <(date '+%H %M %S')
+H24=$((10#$H24))   # 0-23 for 24-hour display
+H12=$((H24 % 12))  # 0-11 for 12-hour bar filling
+M=$((10#$M))       # 0-59
+S=$((10#$S))       # 0-59
+
+# Determine character set based on mode
+case "$mode" in
+  0|1|2) HALF_CHAR='.'; FULL_CHAR=':' ;;  # Modes 0-2: periods/colons
+  3|4|5) HALF_CHAR='▌'; FULL_CHAR='█' ;;  # Modes 3-5: block characters
+esac
+
+# Determine rotation based on mode (ordered slowest → fastest)
+# Modes 0,3: 2-2-6s cycle (slowest)
+# Modes 1,4: 1-1-1-1-6s cycle (medium)
+# Modes 2,5: 1s rotation (fastest)
+case "$mode" in
+  0|3)
+    # 2-2-6 second cycle (slowest)
+    cycle_pos=$(( S % 10 ))
+    if (( cycle_pos < 2 )); then
+      bar_index=0  # Hours for seconds 0-1
+    elif (( cycle_pos < 4 )); then
+      bar_index=1  # Minutes for seconds 2-3
+    else
+      bar_index=2  # Seconds for seconds 4-9
+    fi
+    ;;
+  1|4)
+    # 1-1-1-1-6 second cycle (medium)
+    cycle_pos=$(( S % 10 ))
+    if (( cycle_pos == 0 )); then
+      bar_index=0  # Hours for second 0
+    elif (( cycle_pos == 1 )); then
+      bar_index=1  # Minutes for second 1
+    elif (( cycle_pos == 2 )); then
+      bar_index=0  # Hours for second 2
+    elif (( cycle_pos == 3 )); then
+      bar_index=1  # Minutes for second 3
+    else
+      bar_index=2  # Seconds for seconds 4-9
+    fi
+    ;;
+  2|5)
+    # 1-second rotation (fastest)
+    bar_index=$(( S % 3 ))
+    ;;
+esac
+
+# Calculate fill amount and display value based on which bar we're showing
+case "$bar_index" in
+  0) # Hours
+     label='h'
+     half_chars=$(( H12 * 5 ))  # 0-11 → 0-55 half-chars
+     value=$(printf "%02d" "$H24")  # Display 24-hour time
+     ;;
+  1) # Minutes
+     label='m'
+     half_chars=$M  # 0-59 half-chars
+     value=$(printf "%02d" "$M")
+     ;;
+  2) # Seconds
+     label='s'
+     half_chars=$S  # 0-59 half-chars
+     value=$(printf "%02d" "$S")
+     ;;
+esac
+
+# Build the 30-character progress bar
+if [[ "$bar_index" == 0 && "$GROUP_HOURS" == true ]]; then
+  # Special rendering for hours: 12 notches distributed across 30 chars
+  # Create 30-char array, fill with spaces
+  bar_chars=()
+  for ((i=0; i<30; i++)); do
+    bar_chars[i]=" "
+  done
+
+  # Place 12 hour notches - only middle pixel of each 5-pixel hour block
+  for ((hour=0; hour<12; hour++)); do
+    # Each hour occupies pixels (hour*5) through (hour*5+4)
+    # Middle pixel is at: hour*5 + 2
+    middle_pixel=$(( hour * 5 + 2 ))
+
+    # Convert pixel position to character position
+    char_pos=$(( middle_pixel / 2 ))
+    is_right_half=$(( middle_pixel % 2 ))
+
+    if (( half_chars > middle_pixel )); then
+      # Filled hour notch
+      if [[ "$HALF_CHAR" == '.' ]]; then
+        # Dots mode - filled bullet
+        bar_chars[$char_pos]="•"
+      else
+        # Block mode - filled half blocks
+        if (( is_right_half == 0 )); then
+          bar_chars[$char_pos]="▌"  # Left half (even hours)
+        else
+          bar_chars[$char_pos]="▐"  # Right half (odd hours)
+        fi
+      fi
+    else
+      # Unfilled hour notch (ghost/placeholder)
+      if [[ "$HALF_CHAR" == '.' ]]; then
+        # Dots mode - middle dot
+        bar_chars[$char_pos]="·"
+      else
+        # Block mode - lower quadrant blocks
+        if (( is_right_half == 0 )); then
+          bar_chars[$char_pos]="▖"  # Lower left quadrant (even hours)
+        else
+          bar_chars[$char_pos]="▗"  # Lower right quadrant (odd hours)
+        fi
+      fi
+    fi
+  done
+
+  # Build bar string from array
+  bar=""
+  for ((i=0; i<30; i++)); do
+    bar+="${bar_chars[$i]}"
+  done
+else
+  # Standard rendering for minutes/seconds or when GROUP_HOURS=false
+  full_chars=$(( half_chars / 2 ))
+  has_half=$(( half_chars % 2 ))
+
+  bar=""
+  for ((i=0; i<30; i++)); do
+    if (( i < full_chars )); then
+      bar+="$FULL_CHAR"
+    elif (( i == full_chars && has_half == 1 )); then
+      bar+="$HALF_CHAR"
+    else
+      bar+=" "
+    fi
+  done
+fi
+
+# Output JSON for Waybar
+printf '{"text":"%s %s %s","class":"mid--020-rotating-bars m%s"}\n' "$bar" "$label" "$value" "$mode"

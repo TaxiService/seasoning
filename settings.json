@@ -1,10 +1,11 @@
 {
   "_comment": "Update rates can be: 'second', 'minute', 'hour', 'day', or an array of rates per mode",
   "mid": {
-    "plugins": ["000-hms", "010-sextants"],
+    "plugins": ["000-hms", "010-sextants", "020-rotating-bars"],
     "update_rates": {
       "000-hms": "second",
-      "010-sextants": "second"
+      "010-sextants": "second",
+      "020-rotating-bars": "second"
     }
   },
   "sides": {
